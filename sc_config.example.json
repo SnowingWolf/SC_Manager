@@ -1,0 +1,17 @@
+{
+  "mysql": {
+    "host": "10.11.50.84",
+    "port": 3306,
+    "user": "read",
+    "password": "your_password_here",
+    "database": "slowcontroldata",
+    "charset": "utf8mb4"
+  },
+  "align": {
+    "tolerance": "500ms",
+    "direction": "backward",
+    "lookback": "2s",
+    "chunksize": 200000,
+    "poll_interval": 5.0
+  }
+}
