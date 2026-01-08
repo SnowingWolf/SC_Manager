@@ -24,7 +24,6 @@ from sc_reader.visualizer import (
     plot_boxplot,
     plot_correlation,
     plot_dual_axis,
-    plot_multi_variables,
     plot_subplots,
     plot_timeseries,
 )
@@ -155,9 +154,9 @@ def main():
         # 图表 2: 多变量对比图
         if len(cols_to_plot) >= 2:
             print("  生成多变量对比图...")
-            fig2, ax2 = plot_multi_variables(
+            fig2, ax2 = plot_timeseries(
                 data,
-                columns=cols_to_plot,
+                column=cols_to_plot,
                 title='Temperature Comparison'
             )
             filename2 = 'multi_temperature.png'

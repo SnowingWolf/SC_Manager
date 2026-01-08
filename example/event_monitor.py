@@ -133,7 +133,7 @@ def example_analyze_event_data():
 
     读取事件 CSV 并进行分析和可视化
     """
-    from sc_reader.visualizer import plot_multi_variables
+    from sc_reader.visualizer import plot_timeseries
 
     print("\n" + "=" * 60)
     print("示例 2: 分析事件数据")

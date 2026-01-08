@@ -509,15 +509,15 @@ for table in ['statedata', 'runlidata']:
 ### 与可视化结合
 
 ```python
-from sc_reader.visualizer import plot_multi_variables
+from sc_reader.visualizer import plot_timeseries
 
 # 提取温度列
 temp_cols = [c for c in cache.columns if 'Temperature' in c]
 
 # 绘制对比图
-fig, ax = plot_multi_variables(
+fig, ax = plot_timeseries(
     cache['2025-12-15':'2025-12-16'],
-    temp_cols,
+    column=temp_cols,
     title='Temperature Comparison (Dec 15-16)'
 )
 fig.savefig('temp_comparison.png')

@@ -192,7 +192,7 @@ def example_with_visualization():
     读取 piddata 并绘制温度曲线
     """
     from sc_reader import SCReader, TableSpec
-    from sc_reader.visualizer import plot_multi_variables, plot_correlation
+    from sc_reader.visualizer import plot_timeseries, plot_correlation
 
     print("\n" + "=" * 60)
     print("示例 4: 可视化 - piddata 温度数据")
@@ -224,8 +224,8 @@ def example_with_visualization():
 
         if len(available_cols) >= 2:
             # 时间序列图
-            fig1, ax1 = plot_multi_variables(
-                df, available_cols,
+            fig1, ax1 = plot_timeseries(
+                df, column=available_cols,
                 title='PID Temperature Time Series'
             )
             fig1.savefig('pid_temperature.png', dpi=150, bbox_inches='tight')

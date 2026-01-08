@@ -43,15 +43,13 @@ from .event import (
     create_default_detector,
 )
 from .visualizer import (
-    plot,
-    plot_data,
     plot_boxplot,
     plot_correlation,
     plot_distribution,
     plot_dual_axis,
-    plot_multi_variables,
     plot_rolling_stats,
     plot_subplots,
+    plot_temp_pressure_sync,
     plot_timeseries,
 )
 
@@ -83,12 +81,10 @@ __all__ = [
     'run_event_monitor',
     'create_default_detector',
     # 可视化
-    'plot',
-    'plot_data',
     'plot_timeseries',
-    'plot_multi_variables',
     'plot_dual_axis',
     'plot_subplots',
+    'plot_temp_pressure_sync',
     'plot_distribution',
     'plot_boxplot',
     'plot_correlation',

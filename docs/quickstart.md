@@ -230,7 +230,7 @@ run_event_monitor(reader, detector, on_event)
 
 ```python
 from sc_reader import SCReader
-from sc_reader.visualizer import plot_timeseries, plot_multi_variables
+from sc_reader.visualizer import plot_timeseries
 import matplotlib.pyplot as plt
 
 reader = SCReader()
@@ -242,7 +242,7 @@ fig1.savefig('temp_timeseries.png')
 
 # 多变量对比图
 temp_cols = ['Temperature', 'Temperature2', 'Temperature3']
-fig2, ax2 = plot_multi_variables(data, temp_cols, title='Temperature Comparison')
+fig2, ax2 = plot_timeseries(data, column=temp_cols, title='Temperature Comparison')
 fig2.savefig('temp_comparison.png')
 
 reader.close()
