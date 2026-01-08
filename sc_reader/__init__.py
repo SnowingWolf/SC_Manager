@@ -43,6 +43,7 @@ from .event import (
     create_default_detector,
 )
 from .visualizer import (
+    plot,
     plot_data,
     plot_boxplot,
     plot_correlation,
@@ -82,6 +83,7 @@ __all__ = [
     'run_event_monitor',
     'create_default_detector',
     # 可视化
+    'plot',
     'plot_data',
     'plot_timeseries',
     'plot_multi_variables',
