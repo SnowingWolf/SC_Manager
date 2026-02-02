@@ -127,9 +127,11 @@ def align_asof(
         right_rename = {col: f'{table_name}__{col}' for col in right.columns if col != right_time_col}
         right = right.rename(columns=right_rename)
 
-        # 排序（merge_asof 要求）
-        result = result.sort_values(time_col)
-        right = right.sort_values(right_time_col)
+        # 排序（merge_asof 要求），但只在必要时排序
+        if not result[time_col].is_monotonic_increasing:
+            result = result.sort_values(time_col)
+        if not right[right_time_col].is_monotonic_increasing:
+            right = right.sort_values(right_time_col)
 
         # merge_asof
         result = pd.merge_asof(
