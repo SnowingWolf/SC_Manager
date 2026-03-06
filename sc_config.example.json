@@ -8,7 +8,7 @@
     "charset": "utf8mb4"
   },
   "align": {
-    "tolerance": "500ms",
+    "tolerance": "2s",
     "direction": "backward",
     "lookback": "2s",
     "chunksize": 200000,

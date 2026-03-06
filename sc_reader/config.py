@@ -10,6 +10,7 @@
 4. ~/.sc_config.json
 5. 使用默认值
 """
+
 import json
 import os
 from dataclasses import dataclass, field
@@ -19,21 +20,21 @@ from typing import Optional
 
 # 默认配置值
 _DEFAULTS = {
-    'mysql': {
-        'host': '10.11.50.141',
-        'port': 3306,
-        'user': 'read',
-        'password': '111111',
-        'database': 'slowcontroldata',
-        'charset': 'utf8mb4',
+    "mysql": {
+        "host": "10.11.50.141",
+        "port": 3306,
+        "user": "read",
+        "password": "111111",
+        "database": "slowcontroldata",
+        "charset": "utf8mb4",
     },
-    'align': {
-        'tolerance': '200ms',
-        'direction': 'backward',
-        'lookback': '2s',
-        'chunksize': 200000,
-        'poll_interval': 5.0,
-    }
+    "align": {
+        "tolerance": "2s",
+        "direction": "backward",
+        "lookback": "2s",
+        "chunksize": 200000,
+        "poll_interval": 5.0,
+    },
 }
 
 
@@ -45,19 +46,19 @@ def _find_config_file() -> Optional[Path]:
         配置文件路径，未找到返回 None
     """
     # 环境变量指定的路径
-    env_path = os.getenv('SC_CONFIG_PATH')
+    env_path = os.getenv("SC_CONFIG_PATH")
     if env_path:
         p = Path(env_path)
         if p.exists():
             return p
 
     # 当前目录
-    local = Path('./sc_config.json')
+    local = Path("./sc_config.json")
     if local.exists():
         return local
 
     # 用户主目录
-    home = Path.home() / '.sc_config.json'
+    home = Path.home() / ".sc_config.json"
     if home.exists():
         return home
 
@@ -80,7 +81,7 @@ def load_config(path: Optional[str] = None) -> dict:
         config_path = _find_config_file()
 
     if config_path and config_path.exists():
-        return json.loads(config_path.read_text(encoding='utf-8'))
+        return json.loads(config_path.read_text(encoding="utf-8"))
 
     return {}
 
@@ -106,15 +107,16 @@ class MySQLConfig:
         # 获取连接 URL
         >>> url = config.url
     """
-    host: str = field(default_factory=lambda: os.getenv('MYSQL_HOST', _DEFAULTS['mysql']['host']))
-    port: int = field(default_factory=lambda: int(os.getenv('MYSQL_PORT', str(_DEFAULTS['mysql']['port']))))
-    user: str = field(default_factory=lambda: os.getenv('MYSQL_USER', _DEFAULTS['mysql']['user']))
-    password: str = field(default_factory=lambda: os.getenv('MYSQL_PASSWORD', _DEFAULTS['mysql']['password']))
-    database: str = field(default_factory=lambda: os.getenv('MYSQL_DATABASE', _DEFAULTS['mysql']['database']))
-    charset: str = field(default=_DEFAULTS['mysql']['charset'])
+
+    host: str = field(default_factory=lambda: os.getenv("MYSQL_HOST", _DEFAULTS["mysql"]["host"]))
+    port: int = field(default_factory=lambda: int(os.getenv("MYSQL_PORT", str(_DEFAULTS["mysql"]["port"]))))
+    user: str = field(default_factory=lambda: os.getenv("MYSQL_USER", _DEFAULTS["mysql"]["user"]))
+    password: str = field(default_factory=lambda: os.getenv("MYSQL_PASSWORD", _DEFAULTS["mysql"]["password"]))
+    database: str = field(default_factory=lambda: os.getenv("MYSQL_DATABASE", _DEFAULTS["mysql"]["database"]))
+    charset: str = field(default=_DEFAULTS["mysql"]["charset"])
 
     @classmethod
-    def from_json(cls, path: Optional[str] = None) -> 'MySQLConfig':
+    def from_json(cls, path: Optional[str] = None) -> "MySQLConfig":
         """
         从 JSON 配置文件创建实例
 
@@ -125,15 +127,15 @@ class MySQLConfig:
             MySQLConfig 实例
         """
         config = load_config(path)
-        mysql_config = config.get('mysql', {})
+        mysql_config = config.get("mysql", {})
 
         return cls(
-            host=mysql_config.get('host', _DEFAULTS['mysql']['host']),
-            port=mysql_config.get('port', _DEFAULTS['mysql']['port']),
-            user=mysql_config.get('user', _DEFAULTS['mysql']['user']),
-            password=mysql_config.get('password', _DEFAULTS['mysql']['password']),
-            database=mysql_config.get('database', _DEFAULTS['mysql']['database']),
-            charset=mysql_config.get('charset', _DEFAULTS['mysql']['charset']),
+            host=mysql_config.get("host", _DEFAULTS["mysql"]["host"]),
+            port=mysql_config.get("port", _DEFAULTS["mysql"]["port"]),
+            user=mysql_config.get("user", _DEFAULTS["mysql"]["user"]),
+            password=mysql_config.get("password", _DEFAULTS["mysql"]["password"]),
+            database=mysql_config.get("database", _DEFAULTS["mysql"]["database"]),
+            charset=mysql_config.get("charset", _DEFAULTS["mysql"]["charset"]),
         )
 
     @property
@@ -145,12 +147,12 @@ class MySQLConfig:
     def pymysql_kwargs(self) -> dict:
         """pymysql 连接参数"""
         return {
-            'host': self.host,
-            'port': self.port,
-            'user': self.user,
-            'password': self.password,
-            'database': self.database,
-            'charset': self.charset,
+            "host": self.host,
+            "port": self.port,
+            "user": self.user,
+            "password": self.password,
+            "database": self.database,
+            "charset": self.charset,
         }
 
 
@@ -166,24 +168,25 @@ class AlignConfig:
         chunksize: 分块读取大小
         poll_interval: 轮询间隔（秒）
     """
-    tolerance: str = field(default=_DEFAULTS['align']['tolerance'])
-    direction: str = field(default=_DEFAULTS['align']['direction'])
-    lookback: str = field(default=_DEFAULTS['align']['lookback'])
-    chunksize: int = field(default=_DEFAULTS['align']['chunksize'])
-    poll_interval: float = field(default=_DEFAULTS['align']['poll_interval'])
+
+    tolerance: str = field(default=_DEFAULTS["align"]["tolerance"])
+    direction: str = field(default=_DEFAULTS["align"]["direction"])
+    lookback: str = field(default=_DEFAULTS["align"]["lookback"])
+    chunksize: int = field(default=_DEFAULTS["align"]["chunksize"])
+    poll_interval: float = field(default=_DEFAULTS["align"]["poll_interval"])
 
     @classmethod
-    def from_json(cls, path: Optional[str] = None) -> 'AlignConfig':
+    def from_json(cls, path: Optional[str] = None) -> "AlignConfig":
         """从 JSON 配置文件创建实例"""
         config = load_config(path)
-        align_config = config.get('align', {})
+        align_config = config.get("align", {})
 
         return cls(
-            tolerance=align_config.get('tolerance', _DEFAULTS['align']['tolerance']),
-            direction=align_config.get('direction', _DEFAULTS['align']['direction']),
-            lookback=align_config.get('lookback', _DEFAULTS['align']['lookback']),
-            chunksize=align_config.get('chunksize', _DEFAULTS['align']['chunksize']),
-            poll_interval=align_config.get('poll_interval', _DEFAULTS['align']['poll_interval']),
+            tolerance=align_config.get("tolerance", _DEFAULTS["align"]["tolerance"]),
+            direction=align_config.get("direction", _DEFAULTS["align"]["direction"]),
+            lookback=align_config.get("lookback", _DEFAULTS["align"]["lookback"]),
+            chunksize=align_config.get("chunksize", _DEFAULTS["align"]["chunksize"]),
+            poll_interval=align_config.get("poll_interval", _DEFAULTS["align"]["poll_interval"]),
         )
 
 

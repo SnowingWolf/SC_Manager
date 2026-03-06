@@ -52,6 +52,16 @@ from .visualizer import (
     plot_temp_pressure_sync,
     plot_timeseries,
 )
+from .argon_phase import (
+    plot_argon_pt_path,
+    argon_psub_bar,
+    argon_psat_bar,
+    argon_phase_boundary_bar,
+    ARGON_T_TRIPLE,
+    ARGON_P_TRIPLE_BAR,
+    ARGON_T_CRIT,
+    ARGON_P_CRIT_BAR,
+)
 
 __version__ = '1.3.0'
 __author__ = 'SC_Manager'
@@ -89,4 +99,13 @@ __all__ = [
     'plot_boxplot',
     'plot_correlation',
     'plot_rolling_stats',
+    # 氩气相图
+    'plot_argon_pt_path',
+    'argon_psub_bar',
+    'argon_psat_bar',
+    'argon_phase_boundary_bar',
+    'ARGON_T_TRIPLE',
+    'ARGON_P_TRIPLE_BAR',
+    'ARGON_T_CRIT',
+    'ARGON_P_CRIT_BAR',
 ]

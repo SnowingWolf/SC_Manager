@@ -1,0 +1,83 @@
+# Ignore cache files and data outputs
+.cache/
+cache/
+
+# Ignore analysis and visualization output files
+*.png
+*.csv
+*.svg
+*.tsv
+*.feather
+*.arrow
+*.h5
+*.hdf5
+*.parquet
+*.db
+*.sqlite
+*.sqlite3
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.pyo
+.python-version
+*.egg-info/
+
+# Testing/coverage caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Build artifacts
+build/
+dist/
+
+# Logs
+*.log
+
+# IDEs
+.vscode/
+.idea/
+
+# OS junk files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.*
+.venv/
+venv/
+ENV/
+env/
+*.env
+
+# Cursor/Claude local files
+.cursor/
+.claude/
+.claude/settings.local.json
+CLAUDE.md
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local configs
+sc_config.json
+watermark.json
+watermark*.json
+*_watermark.json
+export_watermark.json
+dash_watermark.json
+sync_test_watermark.json
+
+# Local data caches (generated)
+data/parquet/
+data/parquet_sync_test/

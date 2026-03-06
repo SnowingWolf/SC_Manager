@@ -6,12 +6,15 @@
 
 import functools
 import warnings
-from typing import List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+
+if TYPE_CHECKING:
+    from .cache import AlignedDataCache
 
 try:
     import plotly.graph_objects as go
@@ -163,6 +166,43 @@ def downsample_if_needed(max_points: int = 10000):
     return decorator
 
 
+def _extract_data_from_cache(
+    cache_or_data: Union[pd.DataFrame, pd.Series, 'AlignedDataCache'],
+    time_range: Optional[Union[str, Tuple[str, str]]] = None,
+) -> Union[pd.DataFrame, pd.Series]:
+    """
+    从 cache 或直接数据中提取 DataFrame/Series
+    
+    供 AlignedDataCache 的绘图方法内部使用
+    
+    Args:
+        cache_or_data: AlignedDataCache 对象、DataFrame 或 Series
+        time_range: 时间范围（可选）
+            - str: 单个时间点，例如 '2025-12-15'
+            - Tuple[str, str]: 时间范围，例如 ('2025-12-15', '2025-12-16')
+            - None: 使用全部数据
+    
+    Returns:
+        DataFrame 或 Series
+    """
+    # 检查是否为 AlignedDataCache
+    if hasattr(cache_or_data, 'data') and hasattr(cache_or_data, '__getitem__'):
+        try:
+            # 尝试访问 _reader 属性（AlignedDataCache 特有属性）
+            if hasattr(cache_or_data, '_reader'):
+                if time_range is None:
+                    return cache_or_data.data
+                elif isinstance(time_range, str):
+                    return cache_or_data.loc[time_range]
+                elif isinstance(time_range, tuple) and len(time_range) == 2:
+                    return cache_or_data[time_range[0]:time_range[1]]
+        except (AttributeError, TypeError, KeyError):
+            pass
+    
+    # 不是 cache，直接返回
+    return cache_or_data
+
+
 def _auto_plot_config(data: Union[pd.DataFrame, pd.Series]) -> dict:
     """
     自动识别数据类型并返回配置信息
@@ -192,8 +232,9 @@ def _auto_plot_config(data: Union[pd.DataFrame, pd.Series]) -> dict:
 
 @downsample_if_needed(max_points=10000)
 def plot_timeseries(
-    data: Union[pd.DataFrame, pd.Series],
+    data: Union[pd.DataFrame, pd.Series, 'AlignedDataCache'],
     column: Optional[Union[str, List[str]]] = None,
+    time_range: Optional[Union[str, Tuple[str, str]]] = None,
     figsize: Tuple[int, int] = (12, 5),
     title: Optional[str] = None,
     ylabel: Optional[str] = None,
@@ -217,9 +258,13 @@ def plot_timeseries(
     - DataFrame + column=None：自动选择所有数值列（单列或多列绘制）
     - DataFrame + column=str：绘制指定列
     - DataFrame + column=List[str]：在同一图表中绘制多个列
+    - AlignedDataCache：直接从 cache 读取数据，支持 time_range 参数
 
     Args:
-        data: DataFrame 或 Series，索引为时间
+        data: DataFrame、Series 或 AlignedDataCache 对象，索引为时间
+        time_range: 时间范围（仅当 data 是 AlignedDataCache 时有效）
+            - None: 使用全部数据
+            - Tuple[str, str]: 时间范围，例如 ('2025-12-15', '2025-12-16')
         column: 要绘制的列名（可选）
             - None: 自动选择所有数值列（Series 时忽略）
             - str: 单个列名
@@ -259,7 +304,22 @@ def plot_timeseries(
         >>> # DataFrame + 多列（在同一图表中绘制）
         >>> fig = plot_timeseries(data, ['temp', 'pressure'])
         >>> fig.show()
+        
+        >>> # 使用 AlignedDataCache
+        >>> fig = plot_timeseries(cache, 'tempdata__Temperature')
+        >>> fig.show()
+        
+        >>> # 指定时间范围
+        >>> fig = plot_timeseries(
+        ...     cache,
+        ...     'tempdata__Temperature',
+        ...     time_range=('2025-12-15', '2025-12-16')
+        ... )
+        >>> fig.show()
     """
+    # 提取数据（如果是 cache）
+    data = _extract_data_from_cache(data, time_range)
+    
     # 处理 Series 输入
     if isinstance(data, pd.Series):
         y = data
@@ -530,9 +590,10 @@ def plot_timeseries(
 
 @downsample_if_needed(max_points=10000)
 def plot_dual_axis(
-    data: pd.DataFrame,
+    data: Union[pd.DataFrame, 'AlignedDataCache'],
     left_column: str,
     right_column: str,
+    time_range: Optional[Union[str, Tuple[str, str]]] = None,
     figsize: Tuple[int, int] = (12, 6),
     title: str = 'Dual Axis Time Series',
     left_ylabel: Optional[str] = None,
@@ -550,7 +611,8 @@ def plot_dual_axis(
     绘制双Y轴图表（用于不同量级或单位的参数，支持交互式 Plotly）
 
     Args:
-        data: 包含时间序列数据的 DataFrame，索引为时间
+        data: 包含时间序列数据的 DataFrame 或 AlignedDataCache 对象，索引为时间
+        time_range: 时间范围（仅当 data 是 AlignedDataCache 时有效）
         left_column: 左Y轴的列名
         right_column: 右Y轴的列名
         figsize: 图表大小（matplotlib 使用）
@@ -574,7 +636,19 @@ def plot_dual_axis(
         >>> fig.show()
         >>> fig, ax1, ax2 = plot_dual_axis(data, 'temperature', 'heater_power', backend='matplotlib')  # Matplotlib
         >>> plt.show()
+        
+        >>> # 使用 AlignedDataCache
+        >>> fig = plot_dual_axis(
+        ...     cache,
+        ...     'tempdata__Temperature',
+        ...     'runlidata__Pressure1',
+        ...     time_range=('2025-12-15', '2025-12-16')
+        ... )
+        >>> fig.show()
     """
+    # 提取数据（如果是 cache）
+    data = _extract_data_from_cache(data, time_range)
+    
     if backend == 'plotly' and _PLOTLY_AVAILABLE:
         # Plotly 后端（原生支持双Y轴，数据已由装饰器降采样）
         data_downsampled = data[[left_column, right_column]]
@@ -675,9 +749,10 @@ def plot_dual_axis(
 
 @downsample_if_needed(max_points=10000)
 def plot_subplots(
-    data: pd.DataFrame,
+    data: Union[pd.DataFrame, 'AlignedDataCache'],
     columns: Optional[List[str]] = None,
     column_groups: Optional[List[List[str]]] = None,
+    time_range: Optional[Union[str, Tuple[str, str]]] = None,
     nrows: Optional[int] = None,
     ncols: int = 2,
     figsize: Tuple[int, int] = (14, 10),
@@ -700,7 +775,8 @@ def plot_subplots(
     2. 列组模式（column_groups）：每个子图显示一个列组的所有列，自动同步 X 轴
 
     Args:
-        data: 包含时间序列数据的 DataFrame，索引为时间
+        data: 包含时间序列数据的 DataFrame 或 AlignedDataCache 对象，索引为时间
+        time_range: 时间范围（仅当 data 是 AlignedDataCache 时有效）
         columns: 要绘制的列名列表（单列模式，与 column_groups 互斥）
         column_groups: 列组列表，每个元素是一组要绘制的列名列表（列组模式，与 columns 互斥）
             例如：`[['Temperature1', 'Temperature2'], ['Pressure1', 'Pressure2']]`
@@ -739,7 +815,21 @@ def plot_subplots(
         ...     subplot_titles=['Temperature', 'Pressure']
         ... )
         >>> fig.show()
+        
+        >>> # 使用 AlignedDataCache
+        >>> fig = plot_subplots(
+        ...     cache,
+        ...     column_groups=[
+        ...         ['tempdata__Temperature1', 'tempdata__Temperature2'],
+        ...         ['runlidata__Pressure1', 'runlidata__Pressure2']
+        ...     ],
+        ...     time_range=('2025-12-15', '2025-12-16')
+        ... )
+        >>> fig.show()
     """
+    # 提取数据（如果是 cache）
+    data = _extract_data_from_cache(data, time_range)
+    
     # 参数验证
     if column_groups is not None and columns is not None:
         raise ValueError("不能同时指定 columns 和 column_groups")
@@ -980,9 +1070,10 @@ def plot_subplots(
 
 
 def plot_temp_pressure_sync(
-    data: pd.DataFrame,
+    data: Union[pd.DataFrame, 'AlignedDataCache'],
     temp_columns: Optional[List[str]] = None,
     pressure_columns: Optional[List[str]] = None,
+    time_range: Optional[Union[str, Tuple[str, str]]] = None,
     **kwargs
 ) -> Union['go.Figure', Tuple[plt.Figure, Tuple[plt.Axes, plt.Axes]]]:
     """
@@ -991,9 +1082,10 @@ def plot_temp_pressure_sync(
     自动识别温度和压强列，然后调用 plot_subplots 创建同步子图。
 
     Args:
-        data: 包含时间序列数据的 DataFrame，索引为时间
+        data: 包含时间序列数据的 DataFrame 或 AlignedDataCache 对象，索引为时间
         temp_columns: 温度列名列表（可选，如果为 None 则自动识别）
         pressure_columns: 压强列名列表（可选，如果为 None 则自动识别）
+        time_range: 时间范围（仅当 data 是 AlignedDataCache 时有效）
         **kwargs: 其他参数传递给 plot_subplots
 
     Returns:
@@ -1011,11 +1103,28 @@ def plot_temp_pressure_sync(
         ...     pressure_columns=['Pressure1', 'Pressure2']
         ... )
         >>> fig.show()
+        
+        >>> # 使用 AlignedDataCache
+        >>> fig = plot_temp_pressure_sync(
+        ...     cache,
+        ...     time_range=('2025-12-15', '2025-12-16')
+        ... )
+        >>> fig.show()
     """
+    # 提取数据（如果是 cache，但先不提取，因为需要识别列）
+    # 先识别列，再提取数据
+    if hasattr(data, '_reader'):  # AlignedDataCache
+        cache = data
+        # 使用全部数据识别列
+        data_for_columns = cache.data
+    else:
+        cache = None
+        data_for_columns = data
+    
     # 自动识别温度列
     if temp_columns is None:
         temp_columns = [
-            col for col in data.columns
+            col for col in data_for_columns.columns
             if any(keyword in col.lower() for keyword in ['temp', 'temperature'])
         ]
         if not temp_columns:
@@ -1024,11 +1133,15 @@ def plot_temp_pressure_sync(
     # 自动识别压强列
     if pressure_columns is None:
         pressure_columns = [
-            col for col in data.columns
+            col for col in data_for_columns.columns
             if any(keyword in col.lower() for keyword in ['pressure', 'press'])
         ]
         if not pressure_columns:
             raise ValueError("未找到压强列，请手动指定 pressure_columns 参数")
+    
+    # 提取数据（如果是 cache）
+    if cache is not None:
+        data = _extract_data_from_cache(cache, time_range)
     
     # 设置默认标题
     if 'subplot_titles' not in kwargs:
@@ -1251,8 +1364,9 @@ def plot_correlation(
 
 @downsample_if_needed(max_points=10000)
 def plot_rolling_stats(
-    data: pd.DataFrame,
+    data: Union[pd.DataFrame, 'AlignedDataCache'],
     column: str,
+    time_range: Optional[Union[str, Tuple[str, str]]] = None,
     window: int = 24,
     figsize: Tuple[int, int] = (12, 6),
     title: Optional[str] = None,
@@ -1269,8 +1383,9 @@ def plot_rolling_stats(
     绘制滚动统计图（移动平均和标准差，支持交互式 Plotly）
 
     Args:
-        data: 包含时间序列数据的 DataFrame，索引为时间
+        data: 包含时间序列数据的 DataFrame 或 AlignedDataCache 对象，索引为时间
         column: 要分析的列名
+        time_range: 时间范围（仅当 data 是 AlignedDataCache 时有效）
         window: 滚动窗口大小
         figsize: 图表大小（matplotlib 使用）
         title: 图表标题
@@ -1291,7 +1406,18 @@ def plot_rolling_stats(
         >>> fig.show()
         >>> fig, ax = plot_rolling_stats(data, 'temperature', window=24, backend='matplotlib')  # Matplotlib
         >>> plt.show()
+        
+        >>> # 使用 AlignedDataCache
+        >>> fig = plot_rolling_stats(
+        ...     cache,
+        ...     'tempdata__Temperature',
+        ...     time_range=('2025-12-15', '2025-12-16')
+        ... )
+        >>> fig.show()
     """
+    # 提取数据（如果是 cache）
+    data = _extract_data_from_cache(data, time_range)
+    
     if backend == 'plotly' and _PLOTLY_AVAILABLE:
         # Plotly 后端（数据已由装饰器降采样）
         y = data[column]
