@@ -18,7 +18,7 @@ Examples:
     # 增量读取 + 时间对齐
     >>> from sc_reader import SCReader, TableSpec, collect_and_align
     >>> reader = SCReader(state_path='./watermark.json')
-    >>> specs = [TableSpec('tempdata', 'timestamp'), TableSpec('runlidata', 'timestamp')]
+    >>> specs = [TableSpec('tempdata'), TableSpec('runlidata')]
     >>> df = collect_and_align(reader, specs, anchor='tempdata')
 
     # 事件监控

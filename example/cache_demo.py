@@ -39,8 +39,8 @@ def example_basic_cache():
 
     # 定义表规格
     specs = [
-        TableSpec("tempdata", "timestamp"),
-        TableSpec("runlidata", "timestamp"),
+        TableSpec("tempdata"),
+        TableSpec("runlidata"),
     ]
 
     try:
@@ -97,8 +97,8 @@ def example_time_indexing():
 
     reader = SCReader(state_path="./cache_watermark.json")
     specs = [
-        TableSpec("tempdata", "timestamp"),
-        TableSpec("runlidata", "timestamp"),
+        TableSpec("tempdata"),
+        TableSpec("runlidata"),
     ]
 
     try:
@@ -155,8 +155,8 @@ def example_pandas_operations():
 
     reader = SCReader(state_path="./cache_watermark.json")
     specs = [
-        TableSpec("tempdata", "timestamp"),
-        TableSpec("runlidata", "timestamp"),
+        TableSpec("tempdata"),
+        TableSpec("runlidata"),
     ]
 
     try:

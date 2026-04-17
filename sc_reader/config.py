@@ -15,7 +15,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 
 # 默认配置值
@@ -65,12 +65,12 @@ def _find_config_file() -> Optional[Path]:
     return None
 
 
-def load_config(path: Optional[str] = None) -> dict:
+def load_config(path: Optional[Union[str, Path]] = None) -> dict:
     """
     从 JSON 文件加载配置
 
     Args:
-        path: 配置文件路径，None 则自动查找
+        path: 配置文件路径，支持 str/Path；None 则自动查找
 
     Returns:
         配置字典，未找到文件则返回空字典
@@ -116,12 +116,12 @@ class MySQLConfig:
     charset: str = field(default=_DEFAULTS["mysql"]["charset"])
 
     @classmethod
-    def from_json(cls, path: Optional[str] = None) -> "MySQLConfig":
+    def from_json(cls, path: Optional[Union[str, Path]] = None) -> "MySQLConfig":
         """
         从 JSON 配置文件创建实例
 
         Args:
-            path: 配置文件路径，None 则自动查找
+            path: 配置文件路径，支持 str/Path；None 则自动查找
 
         Returns:
             MySQLConfig 实例
@@ -176,7 +176,7 @@ class AlignConfig:
     poll_interval: float = field(default=_DEFAULTS["align"]["poll_interval"])
 
     @classmethod
-    def from_json(cls, path: Optional[str] = None) -> "AlignConfig":
+    def from_json(cls, path: Optional[Union[str, Path]] = None) -> "AlignConfig":
         """从 JSON 配置文件创建实例"""
         config = load_config(path)
         align_config = config.get("align", {})

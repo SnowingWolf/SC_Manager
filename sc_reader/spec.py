@@ -14,7 +14,7 @@ class TableSpec:
 
     Attributes:
         table: 表名
-        time_col: 时间列名，None 则自动检测
+        time_col: 时间列名，None 则自动检测；对常见 timestamp/time/datetime 列推荐省略
         cols: 要读取的列列表，None 表示读取所有列
         key_col: 主键列名，用于更精确的增量读取
         time_unit: 时间单位，用于 BIGINT 时间戳转换
@@ -27,7 +27,7 @@ class TableSpec:
         # DATETIME 类型，自动检测时间列
         >>> spec1 = TableSpec('temperature')
 
-        # 指定时间列
+        # 指定非标准时间列
         >>> spec2 = TableSpec('sensor', time_col='Time(s)')
 
         # BIGINT 毫秒时间戳
