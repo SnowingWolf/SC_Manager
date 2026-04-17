@@ -1702,6 +1702,25 @@ def interactive_pt_diagram(
     if missing:
         raise KeyError(f"缺少列: {missing}，可用列: {list(df.columns)}")
 
+    # 数据量警告
+    if len(df) > 100000:
+        import warnings
+        warnings.warn(
+            f"数据量较大 ({len(df)} 行)，建议先切片到感兴趣的时间范围以提升性能。\n"
+            f"示例: cache_subset = cache['2026-04-17':'2026-04-18']",
+            UserWarning
+        )
+
+    # 对时序图数据进行降采样（避免渲染过多点）
+    ts_max_points = 10000  # 时序图最大显示点数
+    if len(df) > ts_max_points:
+        # 使用均匀采样
+        step = len(df) // ts_max_points
+        df_ts = df.iloc[::step].copy()
+        print(f"时序图数据已降采样: {len(df)} -> {len(df_ts)} 点")
+    else:
+        df_ts = df
+
     # 默认标签和颜色
     n_temps = len(temperature_cols)
     if labels is None:
@@ -1714,11 +1733,11 @@ def interactive_pt_diagram(
     ts_fig = go.FigureWidget()
     pt_fig = go.FigureWidget()
 
-    # 初始化时间序列图
+    # 初始化时间序列图（使用降采样后的数据）
     ts_fig.add_trace(
         go.Scatter(
-            x=df.index,
-            y=df[pressure_col],
+            x=df_ts.index,
+            y=df_ts[pressure_col],
             mode="lines",
             name=pressure_col.split("__")[-1] if "__" in pressure_col else pressure_col,
             line=dict(color="steelblue", width=1.5),
@@ -1726,11 +1745,11 @@ def interactive_pt_diagram(
         )
     )
 
-    # 添加第一个温度列到时间序列图（右 Y 轴）
+    # 添加第一个温度列到时间序列图（右 Y 轴，使用降采样后的数据）
     ts_fig.add_trace(
         go.Scatter(
-            x=df.index,
-            y=df[temperature_cols[0]],
+            x=df_ts.index,
+            y=df_ts[temperature_cols[0]],
             mode="lines",
             name=temperature_cols[0].split("__")[-1] if "__" in temperature_cols[0] else temperature_cols[0],
             line=dict(color="coral", width=1.5),
@@ -1891,4 +1910,147 @@ def interactive_pt_diagram(
             pt_fig,
         ],
         layout=widgets.Layout(width=f"{width}px"),
+    )
+
+
+def interactive_plot_pt_path(
+    cache: "AlignedData",
+    plot_config: list,
+    *,
+    gas: str = "argon",
+    T_range: tuple = (70, 110),
+    P_range: tuple = (0.1, 3.5),
+    temp_scale: float = 1.0,
+    temp_offset: float = 0.0,
+    press_scale: float = 1.0,
+    press_offset: float = 0.0,
+    ts_height: int = 300,
+    pt_height: int = 500,
+    width: int = 900,
+    arrow_max: int = 12,
+    arrow_min_dist: float = 0.02,
+    downsample_max_points: int = 50000,
+) -> "widgets.VBox":
+    """
+    基于 plot_config 配置列表创建交互式 P-T 相图
+
+    这是 interactive_pt_diagram 的便捷包装函数，接受配置列表格式的参数。
+    每个配置项包含压力列、温度列、标签和颜色。
+
+    Args:
+        cache: AlignedData 缓存对象
+        plot_config: 配置列表，每项为字典，包含:
+            - P_col: 压力列名
+            - T_col: 温度列名
+            - label: 路径标签
+            - color: 路径颜色
+        gas: 气体类型 ('argon' 或 'xenon')
+        T_range: 温度显示范围 (K)
+        P_range: 压力显示范围 (bar)
+        temp_scale: 温度缩放因子
+        temp_offset: 温度偏移量（如摄氏度转开尔文：273.15）
+        press_scale: 压力缩放因子
+        press_offset: 压力偏移量
+        ts_height: 时间序列图高度（像素）
+        pt_height: 相图高度（像素）
+        width: 图表宽度（像素）
+        arrow_max: 相图中最大箭头数量
+        arrow_min_dist: 箭头最小间距（归一化）
+        downsample_max_points: 相图降采样最大点数
+
+    Returns:
+        ipywidgets.VBox 包含时间序列图和相图的交互式组件
+
+    Examples:
+        >>> from sc_reader import AlignedData, interactive_plot_pt_path
+        >>> plot_config = [
+        ...     {"label": "Point A", "P_col": "runlidata__Pressure5",
+        ...      "T_col": "piddata__A_Temperature", "color": "red"},
+        ...     {"label": "Point B", "P_col": "runlidata__Pressure6",
+        ...      "T_col": "piddata__B_Temperature", "color": "blue"},
+        ... ]
+        >>> widget = interactive_plot_pt_path(cache, plot_config)
+        >>> display(widget)
+
+    Performance Tips:
+        对于大数据集（>100万行），建议先切片到感兴趣的时间范围：
+
+        >>> # 使用数据子集
+        >>> df_subset = cache["2026-04-17":"2026-04-18"]
+        >>>
+        >>> # 创建临时 cache
+        >>> class TempCache:
+        ...     def __init__(self, data):
+        ...         self.data = data
+        ...     @property
+        ...     def columns(self):
+        ...         return self.data.columns
+        ...     def __getitem__(self, key):
+        ...         return self.data[key]
+        >>>
+        >>> temp_cache = TempCache(df_subset)
+        >>> widget = interactive_plot_pt_path(temp_cache, plot_config)
+        >>> display(widget)
+    """
+    # 验证 plot_config
+    if not plot_config:
+        raise ValueError("plot_config 不能为空")
+
+    required_keys = {'P_col', 'T_col', 'label', 'color'}
+    for i, cfg in enumerate(plot_config):
+        missing = required_keys - set(cfg.keys())
+        if missing:
+            raise ValueError(f"plot_config[{i}] 缺少键: {missing}")
+
+    # 提取唯一的压力列（保持原始顺序）
+    pressure_cols_unique = []
+    seen = set()
+    for cfg in plot_config:
+        p_col = cfg["P_col"]
+        if p_col not in seen:
+            pressure_cols_unique.append(p_col)
+            seen.add(p_col)
+
+    if len(pressure_cols_unique) > 2:
+        raise ValueError(
+            f"最多支持 2 个不同的压力列，当前有 {len(pressure_cols_unique)} 个: {pressure_cols_unique}"
+        )
+
+    # 设置主压力列和次要压力列
+    # 主压力列是第一个出现的压力列
+    pressure_col = pressure_cols_unique[0]
+    pressure_secondary_col = pressure_cols_unique[1] if len(pressure_cols_unique) == 2 else None
+
+    # 重新排序：先是使用 pressure_col 的配置，再是使用 pressure_secondary_col 的配置
+    # 这样可以确保 interactive_pt_diagram 的逻辑正确（第一个用主压力，其他用次要压力）
+    configs_primary = [cfg for cfg in plot_config if cfg["P_col"] == pressure_col]
+    configs_secondary = [cfg for cfg in plot_config if cfg["P_col"] == pressure_secondary_col] if pressure_secondary_col else []
+
+    # 按重新排序后的配置提取数据
+    sorted_configs = configs_primary + configs_secondary
+    temperature_cols = [cfg["T_col"] for cfg in sorted_configs]
+    labels = [cfg["label"] for cfg in sorted_configs]
+    colors = [cfg["color"] for cfg in sorted_configs]
+
+    # 调用 interactive_pt_diagram
+    return interactive_pt_diagram(
+        cache,
+        pressure_col=pressure_col,
+        temperature_cols=temperature_cols,
+        gas=gas,
+        pressure_secondary_col=pressure_secondary_col,
+        T_range=T_range,
+        P_range=P_range,
+        labels=labels,
+        colors=colors,
+        temp_scale=temp_scale,
+        temp_offset=temp_offset,
+        press_scale=press_scale,
+        press_offset=press_offset,
+        ts_height=ts_height,
+        pt_height=pt_height,
+        width=width,
+        arrow_max=arrow_max,
+        arrow_min_dist=arrow_min_dist,
+        downsample_max_points=downsample_max_points,
     )

@@ -45,8 +45,17 @@ from .event import (
     create_default_detector,
     run_event_monitor,
 )
+from .argon_phase import (
+    ARGON_T_TRIPLE,
+    ARGON_P_TRIPLE_BAR,
+    ARGON_T_CRIT,
+    ARGON_P_CRIT_BAR,
+    argon_psub_bar,
+    argon_psat_bar,
+    argon_phase_boundary_bar,
+    plot_argon_pt_path,
+)
 from .phase_diagram import (
-    # 新 API
     GAS_PROPERTIES,
     get_phase,
     phase_boundary_bar,
@@ -57,6 +66,7 @@ from .phase_diagram import (
 from .reader import SCReader
 from .spec import TableSpec
 from .visualizer import (
+    interactive_plot_pt_path,
     interactive_pt_diagram,
     plot_boxplot,
     plot_correlation,
@@ -105,6 +115,7 @@ __all__ = [
     "plot_correlation",
     "plot_rolling_stats",
     "interactive_pt_diagram",
+    "interactive_plot_pt_path",
     # 相图 (新 API)
     "GAS_PROPERTIES",
     "psub_bar",
@@ -112,6 +123,15 @@ __all__ = [
     "phase_boundary_bar",
     "get_phase",
     "plot_pt_path",
+    # 相图 (氩气)
+    "ARGON_T_TRIPLE",
+    "ARGON_P_TRIPLE_BAR",
+    "ARGON_T_CRIT",
+    "ARGON_P_CRIT_BAR",
+    "argon_psub_bar",
+    "argon_psat_bar",
+    "argon_phase_boundary_bar",
+    "plot_argon_pt_path",
     # Dashboard (通过 sc_reader.dashboard 子模块访问)
     # from sc_reader.dashboard import run_dashboard, SCDashboard, DashboardConfig
 ]

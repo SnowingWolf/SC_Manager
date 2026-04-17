@@ -193,8 +193,13 @@ def plot_argon_pt_path(
     fill_regions: bool = True,
     draw_boundary: bool = True,
     arrow_every: int = 8,
+    arrow_max: Optional[int] = None,
+    arrow_min_dist: float = 0.0,
+    downsample_max_points: Optional[int] = None,
     boundary_points: int = 500,
     title: Optional[str] = None,
+    path_color: str = 'orange',
+    path_label: Optional[str] = None,
     fig: Optional['go.Figure'] = None,
     show: bool = False,
 ) -> 'go.Figure':
@@ -209,8 +214,13 @@ def plot_argon_pt_path(
         fill_regions: 是否填充相区域颜色，默认 True
         draw_boundary: 是否绘制相边界线，默认 True
         arrow_every: 每隔多少个点绘制一个箭头，默认 8（设为 0 禁用箭头）
+        arrow_max: 最大箭头数量（None 表示不限制）
+        arrow_min_dist: 箭头最小归一化位移，低于该值不绘制
+        downsample_max_points: 路径最大点数（None 表示不降采样）
         boundary_points: 相边界线的采样点数，默认 500
         title: 图表标题，默认 "Argon P-T Phase Diagram"
+        path_color: 路径、起点、终点和箭头颜色
+        path_label: 路径标签
         fig: 已有的 Plotly Figure 对象（可选）
         show: 是否自动显示图表，默认 False
 
@@ -245,6 +255,16 @@ def plot_argon_pt_path(
         raise ValueError(
             f"P_bar 和 T_K 长度不一致: {len(P_bar)} vs {len(T_K)}"
         )
+
+    # 可选降采样，优先保证首尾点保留
+    if downsample_max_points is not None and downsample_max_points > 1 and len(T_K) > downsample_max_points:
+        ds_idx = np.linspace(0, len(T_K) - 1, downsample_max_points, dtype=int)
+        ds_idx = np.unique(ds_idx)
+        T_plot = T_K[ds_idx]
+        P_plot = P_bar[ds_idx]
+    else:
+        T_plot = T_K
+        P_plot = P_bar
 
     # 创建 Figure
     if fig is None:
@@ -461,22 +481,23 @@ def plot_argon_pt_path(
     # -------------------------------------------------------------------------
     # 3. 绘制数据路径
     # -------------------------------------------------------------------------
-    n_points = len(T_K)
+    n_points = len(T_plot)
 
     if n_points == 1:
         # 单点：绘制标记
-        phase = _get_phase(T_K[0], P_bar[0])
+        phase = _get_phase(T_plot[0], P_plot[0])
+        point_name = path_label or f'Data Point ({phase})'
         fig.add_trace(go.Scatter(
-            x=T_K,
-            y=P_bar,
+            x=T_plot,
+            y=P_plot,
             mode='markers',
             marker=dict(
                 size=14,
-                color='orange',
+                color=path_color,
                 symbol='circle',
-                line=dict(width=2, color='darkorange'),
+                line=dict(width=2, color=path_color),
             ),
-            name=f'Data Point ({phase})',
+            name=point_name,
             hovertemplate=(
                 f'T: %{{x:.2f}} K<br>'
                 f'P: %{{y:.4f}} bar<br>'
@@ -486,46 +507,74 @@ def plot_argon_pt_path(
     else:
         # 多点：绘制路径
         fig.add_trace(go.Scatter(
-            x=T_K,
-            y=P_bar,
+            x=T_plot,
+            y=P_plot,
             mode='lines',
-            line=dict(color='orange', width=2.5),
-            name='Path',
-            hovertemplate='T: %{x:.2f} K<br>P: %{y:.4f} bar<extra>Path</extra>',
+            line=dict(color=path_color, width=2.5),
+            name=path_label or 'Path',
+            hovertemplate='T: %{x:.2f} K<br>P: %{y:.4f} bar<extra>%{fullData.name}</extra>',
         ))
 
         # 起点和终点标记
         fig.add_trace(go.Scatter(
-            x=[T_K[0]],
-            y=[P_bar[0]],
+            x=[T_plot[0]],
+            y=[P_plot[0]],
             mode='markers',
-            marker=dict(size=10, color='green', symbol='circle'),
-            name='Start',
+            marker=dict(size=10, color=path_color, symbol='circle'),
+            name=f"{path_label or 'Path'} Start",
+            showlegend=False,
             hovertemplate=f'Start<br>T: %{{x:.2f}} K<br>P: %{{y:.4f}} bar<extra></extra>',
         ))
 
         fig.add_trace(go.Scatter(
-            x=[T_K[-1]],
-            y=[P_bar[-1]],
+            x=[T_plot[-1]],
+            y=[P_plot[-1]],
             mode='markers',
-            marker=dict(size=10, color='red', symbol='square'),
-            name='End',
+            marker=dict(size=10, color=path_color, symbol='square'),
+            name=f"{path_label or 'Path'} End",
+            showlegend=False,
             hovertemplate=f'End<br>T: %{{x:.2f}} K<br>P: %{{y:.4f}} bar<extra></extra>',
         ))
 
         # 箭头标注（使用 annotation）
         if arrow_every > 0 and n_points > arrow_every:
-            for i in range(arrow_every, n_points - 1, arrow_every):
+            arrow_indices = np.arange(arrow_every, n_points - 1, arrow_every, dtype=int)
+            T_span = max(T_max - T_min, 1e-12)
+            P_span = max(P_max - P_min, 1e-12)
+            if arrow_min_dist > 0 and len(arrow_indices) > 0:
+                kept = []
+                last_tx = None
+                last_py = None
+                for idx in arrow_indices:
+                    tx = T_plot[idx]
+                    py = P_plot[idx]
+                    if last_tx is None:
+                        kept.append(idx)
+                        last_tx = tx
+                        last_py = py
+                        continue
+                    norm_dist = np.hypot((tx - last_tx) / T_span, (py - last_py) / P_span)
+                    if norm_dist >= arrow_min_dist:
+                        kept.append(idx)
+                        last_tx = tx
+                        last_py = py
+                arrow_indices = np.asarray(kept, dtype=int)
+
+            if arrow_max is not None and arrow_max > 0 and len(arrow_indices) > arrow_max:
+                pick = np.linspace(0, len(arrow_indices) - 1, arrow_max, dtype=int)
+                arrow_indices = arrow_indices[pick]
+
+            for i in arrow_indices:
                 # 计算箭头方向
-                dx = T_K[i] - T_K[i - 1]
-                dy = P_bar[i] - P_bar[i - 1]
+                dx = T_plot[i] - T_plot[i - 1]
+                dy = P_plot[i] - P_plot[i - 1]
 
                 # 添加箭头注释
                 fig.add_annotation(
-                    x=T_K[i],
-                    y=P_bar[i],
-                    ax=T_K[i] - dx * 0.3,
-                    ay=P_bar[i] - dy * 0.3,
+                    x=T_plot[i],
+                    y=P_plot[i],
+                    ax=T_plot[i] - dx * 0.3,
+                    ay=P_plot[i] - dy * 0.3,
                     xref='x',
                     yref='y',
                     axref='x',
@@ -534,7 +583,7 @@ def plot_argon_pt_path(
                     arrowhead=2,
                     arrowsize=1.5,
                     arrowwidth=2,
-                    arrowcolor='darkorange',
+                    arrowcolor=path_color,
                 )
 
     # -------------------------------------------------------------------------
