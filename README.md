@@ -6,6 +6,8 @@ A Python library for reading, analyzing, and visualizing slow control system dat
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.3.0-orange.svg)](https://github.com/sc-manager/sc-reader)
 
+> **Note**: This is the `release` branch for distribution. For development, see the `master` branch.
+
 ## Features
 
 - **Full Table Queries**: Read complete tables or time-range subsets
@@ -20,8 +22,18 @@ A Python library for reading, analyzing, and visualizing slow control system dat
 
 ### Installation
 
+Clone the repository (release branch):
+
 ```bash
-pip install pymysql pandas matplotlib seaborn numpy sqlalchemy pyarrow
+git clone -b release <repository_url>
+cd SC_Manager
+pip install pymysql pandas matplotlib seaborn numpy sqlalchemy pyarrow dash plotly
+```
+
+Or install dependencies from pyproject.toml:
+
+```bash
+pip install -e .
 ```
 
 ### Basic Usage
@@ -127,18 +139,22 @@ run_event_monitor(reader, detector, on_event)
 ```
 SC_Manager/
 ├── sc_reader/
-│   ├── reader.py         # SCReader (full queries)
-│   ├── incremental.py    # SCReader (watermark-based)
+│   ├── reader.py         # SCReader (unified reader)
 │   ├── align.py          # Time alignment (merge_asof)
 │   ├── cache.py          # AlignedDataCache (time-indexed caching)
 │   ├── event.py          # Event detection and window reading
 │   ├── visualizer.py     # Plotting functions
-│   └── config.py         # Configuration management
+│   ├── phase_diagram.py  # P-T phase diagram utilities
+│   ├── config.py         # Configuration management
+│   └── dashboard/        # Web Dashboard module
 ├── example/
 │   ├── basic_usage.py    # Basic usage demo
-│   ├── incremental.py    # Incremental reading demo
 │   ├── cache_demo.py     # Cache management demo
-│   └── event_monitor.py  # Event detection demo
+│   ├── event_monitor.py  # Event detection demo
+│   └── dash_phase_app.py # Dashboard example
+├── scripts/
+│   ├── export_to_parquet.py  # Data export utility
+│   └── local_reader.py       # Local parquet reader
 └── docs/                 # Detailed documentation
 ```
 
@@ -164,14 +180,16 @@ Run the example scripts:
 # Basic usage
 python3 example/basic_usage.py
 
-# Incremental reading
-python3 example/incremental.py
-
 # Data caching
 python3 example/cache_demo.py
 
 # Event monitoring
 python3 example/event_monitor.py
+
+# Interactive dashboard
+python3 -m sc_reader.dashboard
+# or
+python3 example/dash_phase_app.py
 ```
 
 ## Configuration
