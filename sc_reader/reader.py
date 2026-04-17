@@ -79,8 +79,8 @@ class SCReader:
 
     def __init__(
         self,
-        config: Optional[MySQLConfig] = None,
-        state_path: Optional[str] = None,
+        config: Optional[Union[MySQLConfig, str, Path]] = None,
+        state_path: Optional[Union[str, Path]] = None,
         time_zone: Optional[str] = "Asia/Shanghai",
         **kwargs,
     ):
@@ -88,8 +88,8 @@ class SCReader:
         初始化慢控数据读取器
 
         Args:
-            config: MySQL 配置，None 使用默认配置
-            state_path: watermark 持久化路径（用于增量读取）
+            config: MySQL 配置对象或 JSON 配置文件路径，None 使用默认配置
+            state_path: watermark 持久化路径（用于增量读取），支持 str/Path
             time_zone: 时间列统一时区；None 表示保持原始（naive）
             **kwargs: MySQL 连接参数（可覆盖 config）
                 - host: 数据库主机
@@ -106,10 +106,18 @@ class SCReader:
             >>> # 使用自定义配置
             >>> reader = SCReader(host='192.168.1.100', user='myuser')
 
+            >>> # 从配置文件路径加载
+            >>> reader = SCReader(config='./sc_config.json')
+
             >>> # 启用增量读取状态持久化
             >>> reader = SCReader(state_path='./watermark.json')
         """
-        cfg = config or DEFAULT_MYSQL_CONFIG
+        if config is None:
+            cfg = DEFAULT_MYSQL_CONFIG
+        elif isinstance(config, MySQLConfig):
+            cfg = config
+        else:
+            cfg = MySQLConfig.from_json(config)
 
         # 允许 kwargs 覆盖 config
         init_kwargs = cfg.pymysql_kwargs.copy()
@@ -131,7 +139,7 @@ class SCReader:
         self._time_zone = time_zone
 
         # 增量读取相关
-        self.state_path = state_path
+        self.state_path = Path(state_path) if state_path is not None else None
         # watermark: {table: {'last_ts': datetime, 'last_id': Any}}
         self._watermarks: Dict[str, Dict[str, Any]] = {}
         # 表结构缓存（避免同一轮增量里重复 DESCRIBE）
@@ -139,8 +147,8 @@ class SCReader:
         self._time_col_cache: Dict[str, str] = {}
 
         # 加载已有状态
-        if state_path:
-            self.load_state(state_path)
+        if self.state_path:
+            self.load_state(self.state_path)
 
     def _normalize_ts(self, ts: Any) -> Optional[datetime]:
         """Normalize timestamps to match reader timezone (avoid naive/aware compare errors)."""
@@ -796,7 +804,7 @@ class SCReader:
 
     def read_multiple(self, specs: List[TableSpec], lookback: str = "2s") -> Dict[str, pd.DataFrame]:
         """
-        增量读取多个表（并行执行）
+        增量读取多个表（顺序执行，复用连接和缓存）
 
         Args:
             specs: 表规格列表
@@ -815,44 +823,12 @@ class SCReader:
         if not specs:
             return {}
 
-        import threading
-        from concurrent.futures import ThreadPoolExecutor
+        # 顺序读取，复用连接和表结构缓存
+        results = {}
+        for spec in specs:
+            results[spec.table] = self.read_incremental(spec, lookback)
 
-        # 用于线程安全地更新 watermark
-        watermark_lock = threading.Lock()
-
-        def read_single(spec: TableSpec) -> pd.DataFrame:
-            """使用独立连接读取单个表"""
-            # 创建临时 reader（独立连接）
-            temp_reader = SCReader(
-                host=self._host,
-                user=self._user,
-                password=self._password,
-                database=self._database,
-                port=self._port,
-                charset=self._charset,
-                time_zone=self._time_zone,
-            )
-            try:
-                # 复制当前表的 watermark 状态
-                if spec.table in self._watermarks:
-                    temp_reader._watermarks[spec.table] = self._watermarks[spec.table].copy()
-
-                result = temp_reader.read_incremental(spec, lookback)
-
-                # 线程安全地同步 watermark 回主 reader
-                with watermark_lock:
-                    if spec.table in temp_reader._watermarks:
-                        self._watermarks[spec.table] = temp_reader._watermarks[spec.table]
-
-                return result
-            finally:
-                temp_reader.conn.close()
-
-        max_workers = min(len(specs), self._MAX_READ_MULTIPLE_WORKERS)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {spec.table: executor.submit(read_single, spec) for spec in specs}
-            return {table: future.result() for table, future in futures.items()}
+        return results
 
     def reset_watermark(self, table: Optional[str] = None):
         """
@@ -873,40 +849,41 @@ class SCReader:
         elif table in self._watermarks:
             del self._watermarks[table]
 
-    def save_state(self, path: Optional[str] = None):
+    def save_state(self, path: Optional[Union[str, Path]] = None):
         """
         保存 watermark 到 JSON 文件
 
         Args:
-            path: 保存路径，None 使用初始化时的 state_path
+            path: 保存路径，支持 str/Path；None 使用初始化时的 state_path
 
         Examples:
             >>> reader.save_state('./watermark.json')
         """
-        path = path or self.state_path
-        if not path:
+        path_obj = Path(path) if path is not None else self.state_path
+        if path_obj is None:
             return
+
+        path_obj.parent.mkdir(parents=True, exist_ok=True)
 
         state = {}
         for table, wm in self._watermarks.items():
             state[table] = {"last_ts": wm["last_ts"].isoformat() if wm["last_ts"] else None, "last_id": wm["last_id"]}
-        Path(path).write_text(json.dumps(state, indent=2))
+        path_obj.write_text(json.dumps(state, indent=2))
 
-    def load_state(self, path: Optional[str] = None):
+    def load_state(self, path: Optional[Union[str, Path]] = None):
         """
         从 JSON 文件加载 watermark
 
         Args:
-            path: 加载路径，None 使用初始化时的 state_path
+            path: 加载路径，支持 str/Path；None 使用初始化时的 state_path
 
         Examples:
             >>> reader.load_state('./watermark.json')
         """
-        path = path or self.state_path
-        if not path:
+        path_obj = Path(path) if path is not None else self.state_path
+        if path_obj is None:
             return
 
-        path_obj = Path(path)
         if not path_obj.exists():
             return
 

@@ -46,15 +46,30 @@ def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     return df.set_index(time_col)
 
 
-def _prepare_frame(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
+def _prepare_frame(df: pd.DataFrame, table_name: str, assume_normalized: bool = False) -> pd.DataFrame:
+    """
+    准备 DataFrame 用于对齐。
+
+    Args:
+        df: 输入 DataFrame
+        table_name: 表名，用于列重命名
+        assume_normalized: 假定输入已规范化（DatetimeIndex、已排序、无重复），跳过检查
+
+    Returns:
+        规范化的 DataFrame
+    """
     if df.empty:
         return df
     if _is_long_format(df):
         df = _pivot_long_format(df)
     else:
-        df = _ensure_datetime_index(df)
-    if not df.index.is_monotonic_increasing:
-        df = df.sort_index()
+        if assume_normalized:
+            # Fast path: 假定已经是 DatetimeIndex 且已排序
+            pass
+        else:
+            df = _ensure_datetime_index(df)
+            if not df.index.is_monotonic_increasing:
+                df = df.sort_index()
     if df.columns.size:
         rename_map = {col: f"{table_name}__{col}" for col in df.columns}
         df = df.rename(columns=rename_map)
@@ -209,7 +224,8 @@ def align_asof(
     frames: Union[Dict[str, pd.DataFrame], List[pd.DataFrame]],
     anchor: Union[str, int],
     tolerance: Union[str, pd.Timedelta] = '200ms',
-    direction: str = 'backward'
+    direction: str = 'backward',
+    assume_normalized: bool = False
 ) -> pd.DataFrame:
     """
     使用 asof 规则对齐多个表的数据
@@ -225,6 +241,7 @@ def align_asof(
             - 'backward': 向后查找（默认，找历史最近的）
             - 'forward': 向前查找
             - 'nearest': 最近的（任意方向）
+        assume_normalized: 假定输入已规范化（DatetimeIndex、已排序），跳过检查以提升性能
 
     Returns:
         合并后的宽表 DataFrame，索引为 anchor 表的时间
@@ -272,13 +289,13 @@ def align_asof(
         tolerance = pd.Timedelta(tolerance)
 
     # 准备 anchor 表
-    result = _prepare_frame(anchor_df, anchor)
+    result = _prepare_frame(anchor_df, anchor, assume_normalized=assume_normalized)
 
     # 对齐其他表
     for table_name, df in frames.items():
         if table_name == anchor or df.empty:
             continue
-        right = _prepare_frame(df, table_name)
+        right = _prepare_frame(df, table_name, assume_normalized=assume_normalized)
 
         result = _merge_asof_linear(
             result,

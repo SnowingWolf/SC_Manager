@@ -42,8 +42,8 @@ class AlignedData:
         >>>
         >>> reader = SCReader(state_path='./watermark.json')
         >>> specs = [
-        ...     TableSpec('tempdata', 'timestamp'),
-        ...     TableSpec('runlidata', 'timestamp'),
+        ...     TableSpec('tempdata'),
+        ...     TableSpec('runlidata'),
         ... ]
         >>>
         >>> # 创建缓存
@@ -81,6 +81,8 @@ class AlignedData:
         cache_path: Optional[Union[str, Path]] = None,
         auto_load: bool = True,
         auto_save: bool = False,
+        save_every_n_updates: Optional[int] = None,
+        save_min_interval_s: Optional[float] = None,
         tail_recompute: bool = False,
         tail_recompute_window: Optional[str] = None,
         timing_log: bool = False,
@@ -101,6 +103,8 @@ class AlignedData:
             cache_path: 本地缓存文件路径（Parquet 格式），启用本地优先模式
             auto_load: 初始化时自动加载本地缓存（默认 True）
             auto_save: update() 后自动保存到本地缓存（默认 False）
+            save_every_n_updates: 每 N 次 update 保存一次（None 表示每次都保存）
+            save_min_interval_s: 最小保存间隔（秒），避免频繁保存（None 表示无限制）
             tail_recompute: 是否在增量对齐时回算缓存尾部窗口（默认 False）
             tail_recompute_window: 回算窗口大小，如 '5s'；None 表示使用 lookback
             timing_log: 是否打印 update() 分段耗时日志（默认 False）。
@@ -148,6 +152,9 @@ class AlignedData:
         # 本地缓存参数
         self._cache_path = Path(cache_path) if cache_path else None
         self._auto_save = auto_save
+        self._save_every_n_updates = save_every_n_updates
+        self._save_min_interval_s = save_min_interval_s
+        self._last_save_time: Optional[float] = None
         env_timing = os.getenv("SC_ALIGNEDDATA_TIMING", "").strip().lower()
         self._timing_log = timing_log or env_timing in {"1", "true", "yes", "on"}
 
@@ -177,15 +184,20 @@ class AlignedData:
             return None
 
     def _frame_signature(self, df: pd.DataFrame) -> Tuple[int, Optional[int], Optional[int], int]:
-        """生成用于增量空跑判断的 DataFrame 签名。"""
+        """
+        生成用于增量空跑判断的 DataFrame 签名。
+
+        使用轻量签名 (rows, min_ts, max_ts, last_row_hash) 替代全量哈希，
+        大幅降低大表下的计算成本。
+        """
         if df.empty:
             return (0, None, None, 0)
         idx = df.index
         if not isinstance(idx, pd.DatetimeIndex):
             idx = pd.to_datetime(idx)
-        # hash_pandas_object 覆盖索引和值，保证同时间戳值变化也可检测到
-        payload_hash = int(pd.util.hash_pandas_object(df, index=True).sum())
-        return (len(df), int(idx.min().value), int(idx.max().value), payload_hash)
+        # 只对最后一行做哈希，避免全量哈希的高成本
+        last_row_hash = int(pd.util.hash_pandas_object(df.iloc[[-1]], index=True).sum())
+        return (len(df), int(idx.min().value), int(idx.max().value), last_row_hash)
 
     def _frames_signature(
         self, frames: Dict[str, pd.DataFrame]
@@ -261,16 +273,20 @@ class AlignedData:
             return target_idx
         return target_idx.union(tail_idx)
 
-    def _align_incremental(self, frames: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    def _align_incremental(self, frames: Dict[str, pd.DataFrame], changed_tables: List[str]) -> pd.DataFrame:
         """
         仅对新增 anchor 行做对齐，避免每轮对整批增量 frame 全量重算。
+        利用 changed_tables 优化：如果 anchor 无变化，只对变化的非 anchor 表重新对齐。
         """
         anchor_df = frames.get(self._anchor, pd.DataFrame())
         if anchor_df.empty:
             return pd.DataFrame()
 
+        anchor_changed = self._anchor in changed_tables
         anchor_idx = self._get_incremental_anchor_index(anchor_df, frames=frames)
-        if len(anchor_idx) == 0:
+
+        # 如果 anchor 无新增且无非 anchor 表变化，直接返回空
+        if len(anchor_idx) == 0 and not any(t != self._anchor and t in changed_tables for t in frames.keys()):
             return pd.DataFrame()
 
         tol_td = self._parse_timedelta(self._tolerance) or pd.Timedelta(0)
@@ -278,8 +294,8 @@ class AlignedData:
         recompute_td = self._parse_timedelta(self._tail_recompute_window) or pd.Timedelta(0)
         margin = max(tol_td, lookback_td, recompute_td)
 
-        left_min = anchor_idx.min() - margin
-        left_max = anchor_idx.max() + margin
+        left_min = anchor_idx.min() - margin if len(anchor_idx) > 0 else self._data.index.max() - margin
+        left_max = anchor_idx.max() + margin if len(anchor_idx) > 0 else self._data.index.max() + margin
 
         sliced_frames: Dict[str, pd.DataFrame] = {}
         for table, df in frames.items():
@@ -287,15 +303,21 @@ class AlignedData:
                 sliced_frames[table] = df
                 continue
 
+            # 只处理变化的表
+            if table not in changed_tables:
+                continue
+
             if table == self._anchor:
                 # 保持和 anchor_idx 相同的时间窗口
-                sliced_frames[table] = df[df.index.isin(anchor_idx)]
+                if len(anchor_idx) > 0:
+                    sliced_frames[table] = df[df.index.isin(anchor_idx)]
                 continue
 
             # 非锚表仅保留潜在匹配窗口，减少匹配输入规模
             sliced_frames[table] = df[(df.index >= left_min) & (df.index <= left_max)]
 
-        return align_asof(sliced_frames, anchor=self._anchor, tolerance=self._tolerance, direction=self._direction)
+
+        return align_asof(sliced_frames, anchor=self._anchor, tolerance=self._tolerance, direction=self._direction, assume_normalized=True)
 
     def update(self, force_full: bool = False) -> int:
         """
@@ -372,9 +394,9 @@ class AlignedData:
         # 对齐数据
         t0 = time.perf_counter()
         if force_full:
-            new_data = align_asof(frames, anchor=self._anchor, tolerance=self._tolerance, direction=self._direction)
+            new_data = align_asof(frames, anchor=self._anchor, tolerance=self._tolerance, direction=self._direction, assume_normalized=True)
         else:
-            new_data = self._align_incremental(frames)
+            new_data = self._align_incremental(frames, changed_tables)
         timings["align_s"] = time.perf_counter() - t0
         timings["align_rows"] = float(len(new_data))
         timings["skipped_align"] = False
@@ -414,10 +436,25 @@ class AlignedData:
         self._check_memory_limits()
         timings["memory_s"] = time.perf_counter() - t0
 
-        # 自动保存
+        # 自动保存（带频率控制）
         t0 = time.perf_counter()
         if self._auto_save and self._cache_path:
-            self.save(self._cache_path)
+            should_save = True
+
+            # 检查更新次数限制
+            if self._save_every_n_updates is not None:
+                should_save = (self._total_updates % self._save_every_n_updates) == 0
+
+            # 检查时间间隔限制
+            if should_save and self._save_min_interval_s is not None:
+                current_time = time.time()
+                if self._last_save_time is not None:
+                    elapsed = current_time - self._last_save_time
+                    should_save = elapsed >= self._save_min_interval_s
+
+            if should_save:
+                self.save(self._cache_path)
+                self._last_save_time = time.time()
         timings["save_s"] = time.perf_counter() - t0
 
         timings["total_s"] = time.perf_counter() - t_total_start
