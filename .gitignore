@@ -66,6 +66,9 @@ env/
 .claude/settings.local.json
 CLAUDE.md
 
+# Jupyter notebooks (large output files)
+*.ipynb
+
 # Notebook checkpoints
 .ipynb_checkpoints/
 
