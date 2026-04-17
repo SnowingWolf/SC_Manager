@@ -1611,6 +1611,7 @@ def interactive_pt_diagram(
     *,
     gas: str = "argon",
     pressure_secondary_col: Optional[str] = None,
+    path_pressure_cols: Optional[List[str]] = None,
     T_range: Tuple[float, float] = (80, 110),
     P_range: Tuple[float, float] = (0.5, 3.5),
     labels: Optional[List[str]] = None,
@@ -1638,6 +1639,7 @@ def interactive_pt_diagram(
         temperature_cols: 温度列名，可以是单个字符串或字符串列表
         gas: 气体类型，'argon' 或 'xenon'
         pressure_secondary_col: 次要压力列名（可选，用于多路径绘制）
+        path_pressure_cols: 每条温度路径对应的压力列名列表，长度需与 temperature_cols 一致
         T_range: 温度显示范围 (K)
         P_range: 压力显示范围 (bar)
         labels: 路径标签列表
@@ -1692,11 +1694,23 @@ def interactive_pt_diagram(
     if isinstance(temperature_cols, str):
         temperature_cols = [temperature_cols]
 
+    # 规范化每条路径对应的压力列
+    if path_pressure_cols is None:
+        if pressure_secondary_col is None:
+            path_pressure_cols = [pressure_col] * len(temperature_cols)
+        else:
+            path_pressure_cols = [pressure_col] + [pressure_secondary_col] * max(len(temperature_cols) - 1, 0)
+    elif len(path_pressure_cols) != len(temperature_cols):
+        raise ValueError(
+            "path_pressure_cols 长度必须与 temperature_cols 一致: "
+            f"{len(path_pressure_cols)} vs {len(temperature_cols)}"
+        )
+
+    pressure_cols = list(dict.fromkeys(path_pressure_cols))
+
     # 验证列存在
     df = cache.data
-    required_cols = [pressure_col] + list(temperature_cols)
-    if pressure_secondary_col:
-        required_cols.append(pressure_secondary_col)
+    required_cols = pressure_cols + list(temperature_cols)
 
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
@@ -1730,60 +1744,77 @@ def interactive_pt_diagram(
         colors = [default_colors[i % len(default_colors)] for i in range(n_temps)]
 
     # 创建 FigureWidget
-    ts_fig = go.FigureWidget()
+    pressure_fig = go.FigureWidget()
+    temp_fig = go.FigureWidget()
     pt_fig = go.FigureWidget()
 
-    # 初始化时间序列图（使用降采样后的数据）
-    ts_fig.add_trace(
-        go.Scatter(
-            x=df_ts.index,
-            y=df_ts[pressure_col],
-            mode="lines",
-            name=pressure_col.split("__")[-1] if "__" in pressure_col else pressure_col,
-            line=dict(color="steelblue", width=1.5),
-            yaxis="y",
-        )
-    )
+    # 将总时间序列高度分配给两个独立图表
+    single_ts_height = max(ts_height // 2, 200)
 
-    # 添加第一个温度列到时间序列图（右 Y 轴，使用降采样后的数据）
-    ts_fig.add_trace(
-        go.Scatter(
-            x=df_ts.index,
-            y=df_ts[temperature_cols[0]],
-            mode="lines",
-            name=temperature_cols[0].split("__")[-1] if "__" in temperature_cols[0] else temperature_cols[0],
-            line=dict(color="coral", width=1.5),
-            yaxis="y2",
+    # 初始化压力时间序列图
+    pressure_colors = ["steelblue", "slategray", "teal", "brown"]
+    for i, p_col in enumerate(pressure_cols):
+        pressure_fig.add_trace(
+            go.Scatter(
+                x=df_ts.index,
+                y=df_ts[p_col] * press_scale + press_offset,
+                mode="lines",
+                name=p_col.split("__")[-1] if "__" in p_col else p_col,
+                line=dict(color=pressure_colors[i % len(pressure_colors)], width=1.5, dash="solid"),
+            )
         )
-    )
 
-    ts_fig.update_layout(
-        title="Time Series (Drag RangeSlider to Select Range)",
-        xaxis=dict(
-            title="Time",
-            rangeslider=dict(visible=True, thickness=0.1),
-            type="date",
-        ),
-        yaxis=dict(
-            title=pressure_col.split("__")[-1] if "__" in pressure_col else pressure_col,
-            titlefont=dict(color="steelblue"),
-            tickfont=dict(color="steelblue"),
-            side="left",
-        ),
-        yaxis2=dict(
-            title=temperature_cols[0].split("__")[-1] if "__" in temperature_cols[0] else temperature_cols[0],
-            titlefont=dict(color="coral"),
-            tickfont=dict(color="coral"),
-            anchor="x",
-            overlaying="y",
-            side="right",
-        ),
+    pressure_fig.update_layout(
+        title="Pressure vs Time",
         template="plotly_white",
         hovermode="x unified",
-        height=ts_height,
+        height=single_ts_height,
         width=width,
-        margin=dict(l=60, r=60, t=40, b=40),
+        margin=dict(l=60, r=60, t=50, b=30),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0.0,
+        ),
     )
+    pressure_fig.update_xaxes(type="date", title="Time")
+    pressure_fig.update_yaxes(title="Pressure")
+
+    # 初始化温度时间序列图
+    for temp_col, label, color in zip(temperature_cols, labels, colors):
+        temp_fig.add_trace(
+            go.Scatter(
+                x=df_ts.index,
+                y=df_ts[temp_col] * temp_scale + temp_offset,
+                mode="lines",
+                name=label,
+                line=dict(color=color, width=1.5),
+            )
+        )
+
+    temp_fig.update_layout(
+        title="Temperature vs Time",
+        template="plotly_white",
+        hovermode="x unified",
+        height=single_ts_height,
+        width=width,
+        margin=dict(l=60, r=60, t=50, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0.0,
+        ),
+    )
+    temp_fig.update_xaxes(
+        title="Time",
+        type="date",
+        rangeslider=dict(visible=True, thickness=0.1),
+    )
+    temp_fig.update_yaxes(title="Temperature")
 
     def _update_pt_diagram(df_range: pd.DataFrame):
         """更新相图"""
@@ -1801,31 +1832,19 @@ def interactive_pt_diagram(
             )
             return
 
-        # 准备压力数据
-        p_primary = df_range[pressure_col].dropna().to_numpy() * press_scale + press_offset
-        if pressure_secondary_col:
-            p_secondary = df_range[pressure_secondary_col].dropna().to_numpy() * press_scale + press_offset
-        else:
-            p_secondary = p_primary
-
-        # 准备温度数据
+        # 准备 P-T 配对数据，保证压力和温度来自同一时间戳
         temps = []
         p_paths = []
         valid_labels = []
         valid_colors = []
 
-        for i, temp_col in enumerate(temperature_cols):
-            temp_data = df_range[temp_col].dropna()
-            if len(temp_data) > 0:
-                t_values = temp_data.to_numpy() * temp_scale + temp_offset
-                temps.append(t_values)
-                # 第一个温度用主压力，其他用次要压力
-                if i == 0:
-                    p_paths.append(p_primary[: len(t_values)])
-                else:
-                    p_paths.append(p_secondary[: len(t_values)])
-                valid_labels.append(labels[i])
-                valid_colors.append(colors[i])
+        for temp_col, p_col, label, color in zip(temperature_cols, path_pressure_cols, labels, colors):
+            paired = df_range[[p_col, temp_col]].dropna()
+            if len(paired) > 0:
+                p_paths.append(paired[p_col].to_numpy() * press_scale + press_offset)
+                temps.append(paired[temp_col].to_numpy() * temp_scale + temp_offset)
+                valid_labels.append(label)
+                valid_colors.append(color)
 
         if not temps:
             pt_fig.add_annotation(
@@ -1877,36 +1896,60 @@ def interactive_pt_diagram(
         margin=dict(l=60, r=60, t=40, b=40),
     )
 
-    # 范围变化回调
-    def on_xaxis_range_change(layout, xaxis_range):
-        """当 X 轴范围变化时更新相图"""
-        if xaxis_range is None:
-            # 使用全部数据
-            _update_pt_diagram(df)
-        else:
-            try:
-                start, end = xaxis_range
-                # 转换为 pandas 可识别的时间格式
-                df_range = cache[start:end]
-                _update_pt_diagram(df_range)
-            except Exception as e:
-                warnings.warn(f"Failed to update phase diagram: {e}", UserWarning, stacklevel=2)
+    # 范围变化回调：同步两个时间图，并联动更新相图
+    sync_state = {"busy": False}
+
+    def _apply_time_range(source: str, xaxis_range):
+        """同步时间范围并更新相图"""
+        if sync_state["busy"]:
+            return
+
+        sync_state["busy"] = True
+        try:
+            if xaxis_range is None:
+                pressure_fig.layout.xaxis.range = None
+                temp_fig.layout.xaxis.range = None
+                _update_pt_diagram(df)
+                return
+
+            start, end = xaxis_range
+            target_range = [start, end]
+            if source != "pressure":
+                pressure_fig.layout.xaxis.range = target_range
+            if source != "temp":
+                temp_fig.layout.xaxis.range = target_range
+
+            df_range = cache[start:end]
+            _update_pt_diagram(df_range)
+        except Exception as e:
+            warnings.warn(f"Failed to update phase diagram: {e}", UserWarning, stacklevel=2)
+        finally:
+            sync_state["busy"] = False
+
+    def on_pressure_xaxis_range_change(layout, xaxis_range):
+        _apply_time_range("pressure", xaxis_range)
+
+    def on_temp_xaxis_range_change(layout, xaxis_range):
+        _apply_time_range("temp", xaxis_range)
 
     # 注册回调
-    ts_fig.layout.on_change(on_xaxis_range_change, "xaxis.range")
+    pressure_fig.layout.on_change(on_pressure_xaxis_range_change, "xaxis.range")
+    temp_fig.layout.on_change(on_temp_xaxis_range_change, "xaxis.range")
 
     # 创建状态显示
     status_label = widgets.HTML(
         value=f"<b>Data range:</b> {df.index.min()} ~ {df.index.max()} | "
         f"<b>Points:</b> {len(df)} | "
-        f"<b>Columns:</b> {pressure_col}, {', '.join(temperature_cols)}"
+        f"<b>Pressure columns:</b> {', '.join(pressure_cols)} | "
+        f"<b>Temperature columns:</b> {', '.join(temperature_cols)}"
     )
 
     # 组合组件
     return widgets.VBox(
         [
             status_label,
-            ts_fig,
+            pressure_fig,
+            temp_fig,
             pt_fig,
         ],
         layout=widgets.Layout(width=f"{width}px"),
@@ -2028,6 +2071,7 @@ def interactive_plot_pt_path(
 
     # 按重新排序后的配置提取数据
     sorted_configs = configs_primary + configs_secondary
+    path_pressure_cols = [cfg["P_col"] for cfg in sorted_configs]
     temperature_cols = [cfg["T_col"] for cfg in sorted_configs]
     labels = [cfg["label"] for cfg in sorted_configs]
     colors = [cfg["color"] for cfg in sorted_configs]
@@ -2039,6 +2083,7 @@ def interactive_plot_pt_path(
         temperature_cols=temperature_cols,
         gas=gas,
         pressure_secondary_col=pressure_secondary_col,
+        path_pressure_cols=path_pressure_cols,
         T_range=T_range,
         P_range=P_range,
         labels=labels,
