@@ -67,7 +67,10 @@ env/
 CLAUDE.md
 
 # Jupyter notebooks (large output files)
+# Allow example notebooks
 *.ipynb
+!tutorial_slowcontrol.ipynb
+!phase_diagram.ipynb
 
 # Notebook checkpoints
 .ipynb_checkpoints/
