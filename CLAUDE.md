@@ -14,6 +14,7 @@ SC_Manager is a Python library for reading, analyzing, and visualizing slow cont
 - Event detection (edge triggers, step triggers)
 - Event window reading with relative time
 - Data visualization
+- Interactive Web Dashboard (Dash-based)
 
 ## Commands
 
@@ -23,6 +24,10 @@ python3 example/basic_usage.py      # Basic usage demo
 python3 example/incremental.py      # Incremental reading demo
 python3 example/cache_demo.py       # Cache management demo
 python3 example/event_monitor.py    # Event detection demo
+
+# Run Dashboard
+python3 -m sc_reader.dashboard      # Start web dashboard
+python3 -m sc_reader.dashboard --port 8080  # Custom port
 
 # Check Python syntax
 python3 -m py_compile sc_reader/*.py
@@ -37,7 +42,7 @@ jupyter notebook tutorial_slowcontrol.ipynb
 ## Dependencies
 
 ```bash
-pip install pymysql pandas matplotlib seaborn numpy sqlalchemy pyarrow
+pip install pymysql pandas matplotlib seaborn numpy sqlalchemy pyarrow dash plotly
 ```
 
 ## Architecture
@@ -48,30 +53,43 @@ SC_Manager/
 │   ├── __init__.py       # Public API exports
 │   ├── config.py         # Configuration (JSON + env vars)
 │   ├── spec.py           # TableSpec dataclass
-│   ├── reader.py         # SCReader (full queries)
-│   ├── incremental.py    # SCReader (watermark-based)
+│   ├── reader.py         # SCReader (unified reader with SQL, queries, incremental)
 │   ├── align.py          # Time alignment (merge_asof)
 │   ├── cache.py          # AlignedDataCache (time-indexed caching)
 │   ├── event.py          # Event detection and window reading
-│   └── visualizer.py     # 9 plotting functions
+│   ├── visualizer.py     # 9 plotting functions
+│   ├── phase_diagram.py  # P-T phase diagram utilities
+│   └── dashboard/        # Web Dashboard module
+│       ├── __init__.py   # Public API (run_dashboard, SCDashboard)
+│       ├── __main__.py   # CLI entry point
+│       ├── config.py     # DashboardConfig dataclass
+│       ├── app.py        # SCDashboard application factory
+│       ├── layouts.py    # UI layout components
+│       ├── callbacks.py  # Dash callback functions
+│       └── helpers.py    # Utility functions
 ├── example/
 │   ├── basic_usage.py    # SCReader demo
 │   ├── incremental.py    # SCReader + alignment demo
 │   ├── cache_demo.py     # AlignedDataCache demo
 │   └── event_monitor.py  # Event detection demo
-├── connect_mysql.py      # Low-level MySQL wrapper
+├── connect_mysql.py      # Backward compatibility layer (MySQLReader alias)
 ├── sc_config.example.json # Configuration template
 └── tutorial_slowcontrol.ipynb
 ```
 
 **Layer Structure:**
-1. `MySQLReader` (connect_mysql.py) - Raw SQL execution
-2. `SCReader` (sc_reader/reader.py) - Full table queries
-3. `SCReader` (sc_reader/incremental.py) - Incremental reading with watermark
-4. `align_asof` (sc_reader/align.py) - Multi-table time alignment
-5. `AlignedDataCache` (sc_reader/cache.py) - Time-indexed data caching
-6. `EventDetector` / `EventWindowReader` (sc_reader/event.py) - Event detection and window reading
-7. Visualizer functions (sc_reader/visualizer.py) - Plotting utilities
+1. `SCReader` (sc_reader/reader.py) - Unified database reader
+   - Connection management (pymysql)
+   - Basic SQL queries (query, query_df)
+   - Table queries (query_by_time, list_tables, get_table_info)
+   - Incremental reading with watermark tracking
+2. `align_asof` (sc_reader/align.py) - Multi-table time alignment
+3. `AlignedDataCache` (sc_reader/cache.py) - Time-indexed data caching
+4. `EventDetector` / `EventWindowReader` (sc_reader/event.py) - Event detection and window reading
+5. Visualizer functions (sc_reader/visualizer.py) - Plotting utilities
+6. `SCDashboard` (sc_reader/dashboard/) - Interactive web dashboard
+
+**Note:** `connect_mysql.py` provides `MySQLReader` as an alias to `SCReader` for backward compatibility.
 
 ## Configuration
 
@@ -225,6 +243,36 @@ cache.load('./cache.parquet', merge=True)      # Merge with existing
 print(cache.stats)  # Memory, time range, updates, etc.
 ```
 
+### Interactive Dashboard
+
+```python
+# Method 1: Quick start
+from sc_reader.dashboard import run_dashboard
+run_dashboard()
+
+# Method 2: With config file
+run_dashboard("./sc_config.json", port=8080)
+
+# Method 3: Full control
+from sc_reader.dashboard import SCDashboard, DashboardConfig
+config = DashboardConfig(
+    anchor_table="tempdata",
+    gas="xenon",
+    initial_load_hours=12,
+)
+dashboard = SCDashboard(config=config)
+dashboard.run()
+
+# Method 4: Command line
+# python -m sc_reader.dashboard --port 8051 --debug
+```
+
+Dashboard features:
+- Time series plots with interactive range selection
+- P-T phase diagram with real-time updates
+- Auto-refresh from database
+- Configurable load window and downsampling
+
 ## Key Patterns
 
 - All query methods return pandas DataFrames with timestamp as index
@@ -235,6 +283,7 @@ print(cache.stats)  # Memory, time range, updates, etc.
 - `AlignedDataCache` accumulates data with pandas-style time indexing
 - `EventDetector` supports edge triggers (rising/falling) and step triggers
 - `EventWindowReader` reads time windows around events with aligned data
+- `SCDashboard` provides interactive web visualization with Dash/Plotly
 - Matplotlib backend set to 'Agg' for server-side rendering
 
 ## Alternative Hosts

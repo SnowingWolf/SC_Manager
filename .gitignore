@@ -64,7 +64,6 @@ env/
 .cursor/
 .claude/
 .claude/settings.local.json
-CLAUDE.md
 
 # Jupyter notebooks (large output files)
 *.ipynb
