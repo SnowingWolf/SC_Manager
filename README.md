@@ -174,6 +174,8 @@ SC_Manager/
 
 ## Examples
 
+### Python Scripts
+
 Run the example scripts:
 
 ```bash
@@ -191,6 +193,23 @@ python3 -m sc_reader.dashboard
 # or
 python3 example/dash_phase_app.py
 ```
+
+### Jupyter Notebooks
+
+Interactive tutorial notebooks are provided:
+
+```bash
+# Install Jupyter if needed
+pip install jupyter
+
+# Launch tutorial notebook
+jupyter notebook tutorial_slowcontrol.ipynb
+
+# Launch phase diagram example
+jupyter notebook phase_diagram.ipynb
+```
+
+**Note**: Notebooks are provided with outputs cleared. Run all cells to generate visualizations.
 
 ## Configuration
 
