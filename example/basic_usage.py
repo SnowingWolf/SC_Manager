@@ -16,7 +16,8 @@ import sys
 from datetime import datetime
 
 import matplotlib
-matplotlib.use('Agg')  # 非交互式后端
+
+matplotlib.use("Agg")  # 非交互式后端
 import matplotlib.pyplot as plt
 
 from sc_reader import SCReader
@@ -56,7 +57,7 @@ def main():
         print(f"  表列表: {tables}")
 
         # 使用 tempdata 表作为示例
-        table_name = 'tempdata'
+        table_name = "tempdata"
         print(f"\n选择表: {table_name}")
 
         table_info = reader.get_table_info(table_name)
@@ -78,22 +79,18 @@ def main():
 
     try:
         # 根据实际数据时间范围调整
-        start_time = '2025-12-15'
-        end_time = '2025-12-26'
+        start_time = "2025-12-15"
+        end_time = "2025-12-26"
 
         print(f"  查询时间范围: {start_time} 到 {end_time}")
 
-        data = reader.query_by_time(
-            table_name=table_name,
-            start_time=start_time,
-            end_time=end_time
-        )
+        data = reader.query_df(table_name=table_name, start_time=start_time, end_time=end_time)
 
         print(f"✓ 查询成功")
         print(f"  数据行数: {len(data)}")
         print(f"  数据列数: {len(data.columns)}")
 
-        numeric_columns = data.select_dtypes(include=['number']).columns.tolist()
+        numeric_columns = data.select_dtypes(include=["number"]).columns.tolist()
         print(f"  数值列: {numeric_columns}")
 
         if len(data) == 0:
@@ -111,13 +108,13 @@ def main():
 
     try:
         # 温度列
-        temp_cols = [c for c in numeric_columns if 'Temperature' in c]
+        temp_cols = [c for c in numeric_columns if "Temperature" in c]
         if temp_cols:
             stats = data[temp_cols].describe()
             print("✓ 温度统计摘要:")
             print(stats)
 
-            stats.to_csv('temperature_stats.csv')
+            stats.to_csv("temperature_stats.csv")
             print("  已保存: temperature_stats.csv")
 
     except Exception as e:
@@ -130,7 +127,7 @@ def main():
 
     try:
         # 选择温度列用于可视化
-        cols_to_plot = [c for c in numeric_columns if 'Temperature' in c][:4]
+        cols_to_plot = [c for c in numeric_columns if "Temperature" in c][:4]
 
         if not cols_to_plot:
             cols_to_plot = numeric_columns[:3]
@@ -140,13 +137,9 @@ def main():
         # 图表 1: 时间序列图
         if cols_to_plot:
             print("  生成时间序列图...")
-            fig1, ax1 = plot_timeseries(
-                data,
-                column=cols_to_plot[0],
-                title=f'{cols_to_plot[0]} Time Series'
-            )
-            filename1 = f'timeseries_{cols_to_plot[0]}.png'
-            fig1.savefig(filename1, dpi=150, bbox_inches='tight')
+            fig1, ax1 = plot_timeseries(data, column=cols_to_plot[0], title=f"{cols_to_plot[0]} Time Series")
+            filename1 = f"timeseries_{cols_to_plot[0]}.png"
+            fig1.savefig(filename1, dpi=150, bbox_inches="tight")
             output_files.append(filename1)
             plt.close(fig1)
             print(f"  ✓ 已保存: {filename1}")
@@ -154,13 +147,9 @@ def main():
         # 图表 2: 多变量对比图
         if len(cols_to_plot) >= 2:
             print("  生成多变量对比图...")
-            fig2, ax2 = plot_timeseries(
-                data,
-                column=cols_to_plot,
-                title='Temperature Comparison'
-            )
-            filename2 = 'multi_temperature.png'
-            fig2.savefig(filename2, dpi=150, bbox_inches='tight')
+            fig2, ax2 = plot_timeseries(data, column=cols_to_plot, title="Temperature Comparison")
+            filename2 = "multi_temperature.png"
+            fig2.savefig(filename2, dpi=150, bbox_inches="tight")
             output_files.append(filename2)
             plt.close(fig2)
             print(f"  ✓ 已保存: {filename2}")
@@ -172,10 +161,10 @@ def main():
                 data,
                 left_column=cols_to_plot[0],
                 right_column=cols_to_plot[1],
-                title=f'{cols_to_plot[0]} vs {cols_to_plot[1]}'
+                title=f"{cols_to_plot[0]} vs {cols_to_plot[1]}",
             )
-            filename3 = 'dual_axis_temperature.png'
-            fig3.savefig(filename3, dpi=150, bbox_inches='tight')
+            filename3 = "dual_axis_temperature.png"
+            fig3.savefig(filename3, dpi=150, bbox_inches="tight")
             output_files.append(filename3)
             plt.close(fig3)
             print(f"  ✓ 已保存: {filename3}")
@@ -184,14 +173,10 @@ def main():
         if len(cols_to_plot) >= 2:
             print("  生成子图...")
             fig4, axes4 = plot_subplots(
-                data,
-                columns=cols_to_plot,
-                ncols=2,
-                figsize=(14, 8),
-                suptitle='Temperature Subplots'
+                data, columns=cols_to_plot, ncols=2, figsize=(14, 8), suptitle="Temperature Subplots"
             )
-            filename4 = 'subplots_temperature.png'
-            fig4.savefig(filename4, dpi=150, bbox_inches='tight')
+            filename4 = "subplots_temperature.png"
+            fig4.savefig(filename4, dpi=150, bbox_inches="tight")
             output_files.append(filename4)
             plt.close(fig4)
             print(f"  ✓ 已保存: {filename4}")
@@ -199,13 +184,9 @@ def main():
         # 图表 5: 箱线图
         if cols_to_plot:
             print("  生成箱线图...")
-            fig5, ax5 = plot_boxplot(
-                data,
-                columns=cols_to_plot,
-                title='Temperature Box Plot'
-            )
-            filename5 = 'boxplot_temperature.png'
-            fig5.savefig(filename5, dpi=150, bbox_inches='tight')
+            fig5, ax5 = plot_boxplot(data, columns=cols_to_plot, title="Temperature Box Plot")
+            filename5 = "boxplot_temperature.png"
+            fig5.savefig(filename5, dpi=150, bbox_inches="tight")
             output_files.append(filename5)
             plt.close(fig5)
             print(f"  ✓ 已保存: {filename5}")
@@ -213,13 +194,9 @@ def main():
         # 图表 6: 相关性热力图
         if len(cols_to_plot) >= 2:
             print("  生成相关性热力图...")
-            fig6, ax6 = plot_correlation(
-                data,
-                columns=cols_to_plot,
-                title='Temperature Correlation'
-            )
-            filename6 = 'correlation_temperature.png'
-            fig6.savefig(filename6, dpi=150, bbox_inches='tight')
+            fig6, ax6 = plot_correlation(data, columns=cols_to_plot, title="Temperature Correlation")
+            filename6 = "correlation_temperature.png"
+            fig6.savefig(filename6, dpi=150, bbox_inches="tight")
             output_files.append(filename6)
             plt.close(fig6)
             print(f"  ✓ 已保存: {filename6}")
@@ -229,13 +206,14 @@ def main():
     except Exception as e:
         print(f"✗ 可视化生成失败: {e}")
         import traceback
+
         traceback.print_exc()
 
     # ==================== 步骤 6: 保存数据 ====================
     print("\n步骤 6: 保存数据...")
 
     try:
-        csv_filename = 'tempdata_export.csv'
+        csv_filename = "tempdata_export.csv"
         data.to_csv(csv_filename)
         print(f"✓ 已保存数据: {csv_filename}")
 
@@ -259,11 +237,11 @@ def main():
     for i, filename in enumerate(output_files, 1):
         print(f"  {i}. {filename}")
     if output_files:
-        print(f"  {len(output_files)+1}. temperature_stats.csv")
-        print(f"  {len(output_files)+2}. tempdata_export.csv")
+        print(f"  {len(output_files) + 1}. temperature_stats.csv")
+        print(f"  {len(output_files) + 2}. tempdata_export.csv")
 
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

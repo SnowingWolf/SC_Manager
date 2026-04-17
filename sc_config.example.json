@@ -1,17 +1,58 @@
 {
   "mysql": {
-    "host": "10.11.50.84",
+    "host": "10.18.154.24",
     "port": 3306,
     "user": "read",
-    "password": "your_password_here",
+    "password": "111111",
     "database": "slowcontroldata",
     "charset": "utf8mb4"
   },
   "align": {
-    "tolerance": "2s",
+    "tolerance": "4s",
     "direction": "backward",
-    "lookback": "2s",
+    "lookback": "4s",
     "chunksize": 200000,
     "poll_interval": 5.0
+  },
+  "dashboard": {
+    "tables": {
+      "anchor": "piddata",
+      "time_col": "timestamp",
+      "specs": [
+        {"table": "tempdata", "time_col": "timestamp"},
+        {"table": "runlidata", "time_col": "timestamp"},
+        {"table": "statedata", "time_col": "timestamp"},
+        {"table": "piddata", "time_col": "timestamp"}
+      ]
+    },
+    "phase_diagram": {
+      "gas": "argon",
+      "pressure_primary": "runlidata__Pressure5",
+      "pressure_secondary": "runlidata__Pressure6",
+      "temperatures": [
+        "piddata__A_Temperature",
+        "piddata__B_Temperature",
+        "piddata__C_Temperature",
+        "piddata__D_Temperature"
+      ],
+      "T_range": [80, 110],
+      "P_range": [0.5, 3.5]
+    },
+    "units": {
+      "temp_scale": 1.0,
+      "temp_offset": 0.0,
+      "press_scale": 1.0,
+      "press_offset": 0.0
+    },
+    "display": {
+      "initial_load_hours": 6,
+      "ts_max_points": 8000,
+      "phase_max_points": 10000
+    },
+    "server": {
+      "host": "127.0.0.1",
+      "port": 8051,
+      "debug": true
+    }
   }
 }

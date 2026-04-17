@@ -17,7 +17,8 @@ import time
 from datetime import datetime
 
 import matplotlib
-matplotlib.use('Agg')
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
@@ -27,29 +28,29 @@ def example_basic_cache():
 
     创建缓存，首次加载，查看统计信息
     """
-    from sc_reader import SCReader, TableSpec, AlignedDataCache
+    from sc_reader import AlignedData, SCReader, TableSpec
 
     print("=" * 60)
     print("示例 1: 基础缓存用法")
     print("=" * 60)
 
     # 创建 reader
-    reader = SCReader(state_path='./cache_watermark.json')
+    reader = SCReader(state_path="./cache_watermark.json")
 
     # 定义表规格
     specs = [
-        TableSpec('tempdata', 'timestamp'),
-        TableSpec('runlidata', 'timestamp'),
+        TableSpec("tempdata", "timestamp"),
+        TableSpec("runlidata", "timestamp"),
     ]
 
     try:
         # 创建缓存
-        cache = AlignedDataCache(
+        cache = AlignedData(
             reader,
             specs,
-            anchor='tempdata',
-            tolerance='1s',
-            max_memory_mb=100.0  # 限制内存 100MB
+            anchor="tempdata",
+            tolerance="1s",
+            max_memory_mb=100.0,  # 限制内存 100MB
         )
 
         print(f"初始状态: {cache}")
@@ -76,6 +77,7 @@ def example_basic_cache():
     except Exception as e:
         print(f"错误: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         reader.close()
@@ -87,20 +89,20 @@ def example_time_indexing():
 
     演示时间切片和 loc 访问
     """
-    from sc_reader import SCReader, TableSpec, AlignedDataCache
+    from sc_reader import AlignedData, SCReader, TableSpec
 
     print("\n" + "=" * 60)
     print("示例 2: 时间索引查询")
     print("=" * 60)
 
-    reader = SCReader(state_path='./cache_watermark.json')
+    reader = SCReader(state_path="./cache_watermark.json")
     specs = [
-        TableSpec('tempdata', 'timestamp'),
-        TableSpec('runlidata', 'timestamp'),
+        TableSpec("tempdata", "timestamp"),
+        TableSpec("runlidata", "timestamp"),
     ]
 
     try:
-        cache = AlignedDataCache(reader, specs, anchor='tempdata')
+        cache = AlignedData(reader, specs, anchor="tempdata")
         cache.update()
 
         if cache.data.empty:
@@ -112,8 +114,8 @@ def example_time_indexing():
 
         # 时间切片查询
         print("\n1. 时间范围切片:")
-        start_str = time_range[0].strftime('%Y-%m-%d')
-        end_str = time_range[1].strftime('%Y-%m-%d')
+        start_str = time_range[0].strftime("%Y-%m-%d")
+        end_str = time_range[1].strftime("%Y-%m-%d")
 
         df_range = cache[start_str:end_str]
         print(f"  {start_str} ~ {end_str}: {len(df_range)} 行")
@@ -133,6 +135,7 @@ def example_time_indexing():
     except Exception as e:
         print(f"错误: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         reader.close()
@@ -144,20 +147,20 @@ def example_pandas_operations():
 
     演示重采样、滚动统计等操作
     """
-    from sc_reader import SCReader, TableSpec, AlignedDataCache
+    from sc_reader import AlignedData, SCReader, TableSpec
 
     print("\n" + "=" * 60)
     print("示例 3: pandas 操作")
     print("=" * 60)
 
-    reader = SCReader(state_path='./cache_watermark.json')
+    reader = SCReader(state_path="./cache_watermark.json")
     specs = [
-        TableSpec('tempdata', 'timestamp'),
-        TableSpec('runlidata', 'timestamp'),
+        TableSpec("tempdata", "timestamp"),
+        TableSpec("runlidata", "timestamp"),
     ]
 
     try:
-        cache = AlignedDataCache(reader, specs, anchor='tempdata')
+        cache = AlignedData(reader, specs, anchor="tempdata")
         cache.update()
 
         if cache.data.empty:
@@ -165,7 +168,7 @@ def example_pandas_operations():
             return
 
         # 找数值列
-        numeric_cols = cache.data.select_dtypes(include=['number']).columns[:3]
+        numeric_cols = cache.data.select_dtypes(include=["number"]).columns[:3]
         if len(numeric_cols) == 0:
             print("没有数值列")
             return
@@ -174,14 +177,14 @@ def example_pandas_operations():
 
         # 1. 重采样
         print("\n1. 重采样（1分钟平均）:")
-        resampled = cache.data[numeric_cols].resample('1min').mean()
+        resampled = cache.data[numeric_cols].resample("1min").mean()
         print(f"  原始数据: {len(cache)} 行")
         print(f"  重采样后: {len(resampled)} 行")
         print(resampled.head())
 
         # 2. 滚动统计
         print("\n2. 滚动标准差（10分钟窗口）:")
-        rolling = cache.data[numeric_cols].rolling('10min').std()
+        rolling = cache.data[numeric_cols].rolling("10min").std()
         print(rolling.tail())
 
         # 3. 描述性统计
@@ -191,7 +194,7 @@ def example_pandas_operations():
         # 4. 绘图
         if len(numeric_cols) > 0:
             print("\n4. 生成时间序列图...")
-            fig, axes = plt.subplots(len(numeric_cols), 1, figsize=(12, 4*len(numeric_cols)))
+            fig, axes = plt.subplots(len(numeric_cols), 1, figsize=(12, 4 * len(numeric_cols)))
             if len(numeric_cols) == 1:
                 axes = [axes]
 
@@ -200,14 +203,15 @@ def example_pandas_operations():
                 axes[i].grid(True, alpha=0.3)
 
             fig.tight_layout()
-            output_file = 'cache_timeseries.png'
-            fig.savefig(output_file, dpi=150, bbox_inches='tight')
+            output_file = "cache_timeseries.png"
+            fig.savefig(output_file, dpi=150, bbox_inches="tight")
             plt.close(fig)
             print(f"  已保存: {output_file}")
 
     except Exception as e:
         print(f"错误: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         reader.close()
@@ -219,25 +223,25 @@ def example_continuous_update():
 
     定期拉取增量数据并监控缓存状态
     """
-    from sc_reader import SCReader, TableSpec, AlignedDataCache
+    from sc_reader import AlignedData, SCReader, TableSpec
 
     print("\n" + "=" * 60)
     print("示例 4: 持续更新模式")
     print("=" * 60)
     print("(Ctrl+C 停止)")
 
-    reader = SCReader(state_path='./cache_watermark.json')
+    reader = SCReader(state_path="./cache_watermark.json")
     specs = [
-        TableSpec('tempdata', 'timestamp'),
-        TableSpec('runlidata', 'timestamp'),
+        TableSpec("tempdata", "timestamp"),
+        TableSpec("runlidata", "timestamp"),
     ]
 
     try:
-        cache = AlignedDataCache(
+        cache = AlignedData(
             reader,
             specs,
-            anchor='tempdata',
-            max_rows=10000  # 限制最多 10000 行
+            anchor="tempdata",
+            max_rows=10000,  # 限制最多 10000 行
         )
 
         # 首次加载
@@ -249,15 +253,17 @@ def example_continuous_update():
 
         while True:
             poll_count += 1
-            ts = datetime.now().strftime('%H:%M:%S')
+            ts = datetime.now().strftime("%H:%M:%S")
 
             # 增量更新
             new_rows = cache.update()
 
-            print(f"[{ts}] 轮询 #{poll_count}: "
-                  f"新增 {new_rows} 行, "
-                  f"总计 {len(cache)} 行, "
-                  f"内存 {cache.memory_usage_mb:.1f}MB")
+            print(
+                f"[{ts}] 轮询 #{poll_count}: "
+                f"新增 {new_rows} 行, "
+                f"总计 {len(cache)} 行, "
+                f"内存 {cache.memory_usage_mb:.1f}MB"
+            )
 
             time.sleep(poll_interval)
 
@@ -273,25 +279,26 @@ def example_persistence():
 
     演示 save/load 功能和热启动
     """
-    from sc_reader import SCReader, TableSpec, AlignedDataCache
     import os
+
+    from sc_reader import AlignedData, SCReader, TableSpec
 
     print("\n" + "=" * 60)
     print("示例 5: 数据持久化")
     print("=" * 60)
 
-    reader = SCReader(state_path='./cache_watermark.json')
+    reader = SCReader(state_path="./cache_watermark.json")
     specs = [
-        TableSpec('tempdata', 'timestamp'),
-        TableSpec('runlidata', 'timestamp'),
+        TableSpec("tempdata", "timestamp"),
+        TableSpec("runlidata", "timestamp"),
     ]
 
-    cache_file = './cache/aligned_data.parquet'
+    cache_file = "./cache/aligned_data.parquet"
 
     try:
         # 1. 创建并保存缓存
         print("1. 创建缓存并保存...")
-        cache = AlignedDataCache(reader, specs, anchor='tempdata')
+        cache = AlignedData(reader, specs, anchor="tempdata")
         n = cache.update()
         print(f"  加载 {n} 行")
 
@@ -305,14 +312,14 @@ def example_persistence():
 
         # 2. 从文件加载
         print("\n2. 从文件加载缓存...")
-        cache2 = AlignedDataCache(reader, specs, anchor='tempdata')
+        cache2 = AlignedData(reader, specs, anchor="tempdata")
         cache2.load(cache_file)
         print(f"  加载 {len(cache2)} 行")
         print(f"  时间范围: {cache2.time_range}")
 
         # 3. 热启动：加载 + 增量更新
         print("\n3. 热启动模式（加载历史 + 拉取增量）...")
-        cache3 = AlignedDataCache(reader, specs, anchor='tempdata')
+        cache3 = AlignedData(reader, specs, anchor="tempdata")
         cache3.load(cache_file)
         print(f"  从文件加载: {len(cache3)} 行")
 
@@ -322,7 +329,7 @@ def example_persistence():
 
         # 4. 合并加载
         print("\n4. 合并加载模式...")
-        cache4 = AlignedDataCache(reader, specs, anchor='tempdata')
+        cache4 = AlignedData(reader, specs, anchor="tempdata")
         cache4.update()  # 先读取当前数据
         print(f"  当前数据: {len(cache4)} 行")
 
@@ -332,6 +339,7 @@ def example_persistence():
     except Exception as e:
         print(f"错误: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         reader.close()
@@ -343,25 +351,22 @@ def example_memory_management():
 
     演示三种内存管理策略
     """
-    from sc_reader import SCReader, TableSpec, AlignedDataCache
+    from sc_reader import AlignedData, SCReader, TableSpec
 
     print("\n" + "=" * 60)
     print("示例 6: 内存管理策略")
     print("=" * 60)
 
-    reader = SCReader(state_path='./cache_watermark.json')
+    reader = SCReader(state_path="./cache_watermark.json")
     specs = [
-        TableSpec('tempdata', 'timestamp'),
-        TableSpec('runlidata', 'timestamp'),
+        TableSpec("tempdata", "timestamp"),
+        TableSpec("runlidata", "timestamp"),
     ]
 
     try:
         # 1. 时间窗口限制
         print("1. 时间窗口限制（保留最近 1 天）:")
-        cache1 = AlignedDataCache(
-            reader, specs, anchor='tempdata',
-            time_window_days=1.0
-        )
+        cache1 = AlignedData(reader, specs, anchor="tempdata", time_window_days=1.0)
         cache1.update()
         print(f"  数据行数: {len(cache1)}")
         if cache1.time_range:
@@ -369,19 +374,13 @@ def example_memory_management():
 
         # 2. 行数限制
         print("\n2. 行数限制（最多 1000 行）:")
-        cache2 = AlignedDataCache(
-            reader, specs, anchor='tempdata',
-            max_rows=1000
-        )
+        cache2 = AlignedData(reader, specs, anchor="tempdata", max_rows=1000)
         cache2.update()
         print(f"  数据行数: {len(cache2)}")
 
         # 3. 内存限制
         print("\n3. 内存限制（最多 10MB）:")
-        cache3 = AlignedDataCache(
-            reader, specs, anchor='tempdata',
-            max_memory_mb=10.0
-        )
+        cache3 = AlignedData(reader, specs, anchor="tempdata", max_memory_mb=10.0)
         cache3.update()
         print(f"  数据行数: {len(cache3)}")
         print(f"  内存占用: {cache3.memory_usage_mb:.1f}MB")
@@ -389,12 +388,13 @@ def example_memory_management():
     except Exception as e:
         print(f"错误: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         reader.close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("""
 AlignedDataCache 缓存管理示例
 
@@ -420,12 +420,12 @@ AlignedDataCache 缓存管理示例
         choice = input("请输入选项 (1-6): ").strip()
 
     examples = {
-        '1': example_basic_cache,
-        '2': example_time_indexing,
-        '3': example_pandas_operations,
-        '4': example_continuous_update,
-        '5': example_persistence,
-        '6': example_memory_management,
+        "1": example_basic_cache,
+        "2": example_time_indexing,
+        "3": example_pandas_operations,
+        "4": example_continuous_update,
+        "5": example_persistence,
+        "6": example_memory_management,
     }
 
     if choice in examples:

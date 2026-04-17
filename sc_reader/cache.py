@@ -4,16 +4,18 @@
 提供时间索引数据缓存，支持增量更新和 pandas 风格访问。
 """
 
+import os
+import time
+import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
-import warnings
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 
+from .align import align_asof
 from .reader import SCReader
 from .spec import TableSpec
-from .align import align_asof
 
 try:
     import plotly.graph_objects as go
@@ -24,7 +26,7 @@ except ImportError:
     go = None
 
 
-class AlignedDataCache:
+class AlignedData:
     """
     时间索引数据缓存管理器
 
@@ -67,7 +69,7 @@ class AlignedDataCache:
 
     def __init__(
         self,
-        reader: SCReader,
+        reader: Optional[SCReader],
         specs: List[TableSpec],
         anchor: str,
         tolerance: str = "5s",
@@ -76,12 +78,18 @@ class AlignedDataCache:
         max_memory_mb: Optional[float] = None,
         max_rows: Optional[int] = None,
         time_window_days: Optional[float] = None,
+        cache_path: Optional[Union[str, Path]] = None,
+        auto_load: bool = True,
+        auto_save: bool = False,
+        tail_recompute: bool = False,
+        tail_recompute_window: Optional[str] = None,
+        timing_log: bool = False,
     ):
         """
         初始化缓存管理器
 
         Args:
-            reader: SCReader 实例
+            reader: SCReader 实例，如果为 None 则只能使用本地缓存（离线模式）
             specs: TableSpec 列表，要读取的表
             anchor: 锚表名，以该表时间轴为基准
             tolerance: 时间对齐容差，默认 '200ms'
@@ -90,9 +98,33 @@ class AlignedDataCache:
             max_memory_mb: 最大内存占用（MB），超出则触发清理
             max_rows: 最大行数，超出则删除旧数据
             time_window_days: 时间窗口（天），只保留最近 N 天数据
+            cache_path: 本地缓存文件路径（Parquet 格式），启用本地优先模式
+            auto_load: 初始化时自动加载本地缓存（默认 True）
+            auto_save: update() 后自动保存到本地缓存（默认 False）
+            tail_recompute: 是否在增量对齐时回算缓存尾部窗口（默认 False）
+            tail_recompute_window: 回算窗口大小，如 '5s'；None 表示使用 lookback
+            timing_log: 是否打印 update() 分段耗时日志（默认 False）。
+                也可通过环境变量 SC_ALIGNEDDATA_TIMING=1 开启。
 
         Raises:
             ValueError: anchor 不在 specs 中
+
+        Examples:
+            >>> # 本地优先模式：自动加载缓存，增量更新后自动保存
+            >>> cache = AlignedDataCache(
+            ...     reader, specs, anchor='tempdata',
+            ...     cache_path='./cache.parquet',
+            ...     auto_load=True,
+            ...     auto_save=True,
+            ... )
+            >>> cache.update()  # 自动加载本地 -> 增量拉取 -> 自动保存
+            >>>
+            >>> # 离线模式：不连接数据库，只使用本地缓存
+            >>> cache = AlignedDataCache(
+            ...     reader=None, specs=specs, anchor='tempdata',
+            ...     cache_path='./cache.parquet',
+            ... )
+            >>> df = cache['2025-01-01':'2025-01-31']
         """
         # 验证 anchor
         table_names = [spec.table for spec in specs]
@@ -105,11 +137,19 @@ class AlignedDataCache:
         self._tolerance = tolerance
         self._direction = direction
         self._lookback = lookback
+        self._tail_recompute = tail_recompute
+        self._tail_recompute_window = tail_recompute_window
 
         # 内存管理参数
         self._max_memory_mb = max_memory_mb
         self._max_rows = max_rows
         self._time_window_days = time_window_days
+
+        # 本地缓存参数
+        self._cache_path = Path(cache_path) if cache_path else None
+        self._auto_save = auto_save
+        env_timing = os.getenv("SC_ALIGNEDDATA_TIMING", "").strip().lower()
+        self._timing_log = timing_log or env_timing in {"1", "true", "yes", "on"}
 
         # 缓存数据
         self._data: pd.DataFrame = pd.DataFrame()
@@ -119,10 +159,153 @@ class AlignedDataCache:
         self._total_updates = 0
         self._total_rows_added = 0
         self._last_update_time: Optional[datetime] = None
+        self._last_update_timing: Dict[str, float] = {}
+        self._last_frames_signature: Optional[Dict[str, Tuple[int, Optional[int], Optional[int], int]]] = None
+
+        # 自动加载本地缓存
+        if auto_load and self._cache_path and self._cache_path.exists():
+            self.load(self._cache_path)
+
+    def _parse_timedelta(self, value: Optional[Union[str, pd.Timedelta]]) -> Optional[pd.Timedelta]:
+        if value is None:
+            return None
+        if isinstance(value, pd.Timedelta):
+            return value
+        try:
+            return pd.Timedelta(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _frame_signature(self, df: pd.DataFrame) -> Tuple[int, Optional[int], Optional[int], int]:
+        """生成用于增量空跑判断的 DataFrame 签名。"""
+        if df.empty:
+            return (0, None, None, 0)
+        idx = df.index
+        if not isinstance(idx, pd.DatetimeIndex):
+            idx = pd.to_datetime(idx)
+        # hash_pandas_object 覆盖索引和值，保证同时间戳值变化也可检测到
+        payload_hash = int(pd.util.hash_pandas_object(df, index=True).sum())
+        return (len(df), int(idx.min().value), int(idx.max().value), payload_hash)
+
+    def _frames_signature(
+        self, frames: Dict[str, pd.DataFrame]
+    ) -> Dict[str, Tuple[int, Optional[int], Optional[int], int]]:
+        return {table: self._frame_signature(df) for table, df in frames.items()}
+
+    def _get_incremental_anchor_index(
+        self, anchor_df: pd.DataFrame, frames: Optional[Dict[str, pd.DataFrame]] = None
+    ) -> pd.DatetimeIndex:
+        """
+        计算本轮需要重新对齐的 anchor 时间索引。
+        默认只包含新增 anchor 行；可选回算尾窗。
+        """
+        if anchor_df.empty:
+            return pd.DatetimeIndex([])
+
+        idx = anchor_df.index
+        if not isinstance(idx, pd.DatetimeIndex):
+            idx = pd.to_datetime(idx)
+        if idx.has_duplicates:
+            idx = idx[~idx.duplicated(keep="last")]
+        if not idx.is_monotonic_increasing:
+            idx = idx.sort_values()
+
+        # 首次加载：全量对齐
+        if self._data.empty:
+            return idx
+
+        last_cached_ts = self._data.index.max()
+        incremental_idx = idx[idx > last_cached_ts]
+
+        # 非锚表晚到数据可能需要回填历史 anchor 行（即使 anchor 无新增）
+        # 这里根据非锚表时间范围 + 容差窗口，自动补充一段回算索引。
+        backfill_idx = pd.DatetimeIndex([])
+        if frames:
+            tol_td = self._parse_timedelta(self._tolerance) or pd.Timedelta(0)
+            margin = tol_td
+
+            non_anchor_min = None
+            non_anchor_max = None
+            for table, df in frames.items():
+                if table == self._anchor or df.empty:
+                    continue
+                right_idx = df.index
+                if not isinstance(right_idx, pd.DatetimeIndex):
+                    right_idx = pd.to_datetime(right_idx)
+                if len(right_idx) == 0:
+                    continue
+                cur_min = right_idx.min()
+                cur_max = right_idx.max()
+                non_anchor_min = cur_min if non_anchor_min is None else min(non_anchor_min, cur_min)
+                non_anchor_max = cur_max if non_anchor_max is None else max(non_anchor_max, cur_max)
+
+            if non_anchor_min is not None and non_anchor_max is not None:
+                backfill_start = non_anchor_min - margin
+                backfill_end = min(non_anchor_max + margin, last_cached_ts)
+                if backfill_end >= backfill_start:
+                    backfill_idx = idx[(idx >= backfill_start) & (idx <= backfill_end)]
+
+        target_idx = incremental_idx.union(backfill_idx)
+
+        if not self._tail_recompute:
+            return target_idx
+
+        # 可选回算尾窗：用于处理极端乱序写入
+        recompute_window = self._parse_timedelta(self._tail_recompute_window) or self._parse_timedelta(self._lookback)
+        if recompute_window is None:
+            return target_idx
+
+        tail_start = last_cached_ts - recompute_window
+        tail_idx = idx[(idx >= tail_start) & (idx <= last_cached_ts)]
+        if len(tail_idx) == 0:
+            return target_idx
+        return target_idx.union(tail_idx)
+
+    def _align_incremental(self, frames: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+        """
+        仅对新增 anchor 行做对齐，避免每轮对整批增量 frame 全量重算。
+        """
+        anchor_df = frames.get(self._anchor, pd.DataFrame())
+        if anchor_df.empty:
+            return pd.DataFrame()
+
+        anchor_idx = self._get_incremental_anchor_index(anchor_df, frames=frames)
+        if len(anchor_idx) == 0:
+            return pd.DataFrame()
+
+        tol_td = self._parse_timedelta(self._tolerance) or pd.Timedelta(0)
+        lookback_td = self._parse_timedelta(self._lookback) or pd.Timedelta(0)
+        recompute_td = self._parse_timedelta(self._tail_recompute_window) or pd.Timedelta(0)
+        margin = max(tol_td, lookback_td, recompute_td)
+
+        left_min = anchor_idx.min() - margin
+        left_max = anchor_idx.max() + margin
+
+        sliced_frames: Dict[str, pd.DataFrame] = {}
+        for table, df in frames.items():
+            if df.empty:
+                sliced_frames[table] = df
+                continue
+
+            if table == self._anchor:
+                # 保持和 anchor_idx 相同的时间窗口
+                sliced_frames[table] = df[df.index.isin(anchor_idx)]
+                continue
+
+            # 非锚表仅保留潜在匹配窗口，减少匹配输入规模
+            sliced_frames[table] = df[(df.index >= left_min) & (df.index <= left_max)]
+
+        return align_asof(sliced_frames, anchor=self._anchor, tolerance=self._tolerance, direction=self._direction)
 
     def update(self, force_full: bool = False) -> int:
         """
         拉取增量数据并合并到缓存
+
+        如果启用了本地缓存（cache_path），会：
+        1. 初始化时自动加载本地缓存（如果 auto_load=True）
+        2. 从数据库拉取增量数据
+        3. 合并到内存缓存
+        4. 自动保存到本地（如果 auto_save=True）
 
         Args:
             force_full: 强制全量读取（忽略 watermark）
@@ -130,27 +313,94 @@ class AlignedDataCache:
         Returns:
             新增行数
 
+        Raises:
+            RuntimeError: 离线模式下调用 update()
+
         Examples:
             >>> new_rows = cache.update()
             >>> print(f"新增 {new_rows} 行")
         """
+        t_total_start = time.perf_counter()
+        timings: Dict[str, float] = {}
+
+        # 离线模式检查
+        if self._reader is None:
+            raise RuntimeError(
+                "离线模式下无法调用 update()。"
+                "请使用 reader 参数初始化，或直接使用 load() 加载本地缓存。"
+            )
+
         if force_full:
             # 重置 watermark 强制全量读取
             for spec in self._specs:
                 self._reader.reset_watermark(spec.table)
 
         # 读取增量数据
+        t0 = time.perf_counter()
         frames = self._reader.read_multiple(self._specs, lookback=self._lookback)
+        timings["read_s"] = time.perf_counter() - t0
+        timings["read_rows"] = float(sum(len(df) for df in frames.values()))
+        frame_sig = self._frames_signature(frames)
+        changed_tables: List[str]
+        if self._last_frames_signature is None:
+            changed_tables = sorted(frame_sig.keys())
+        else:
+            all_tables = set(frame_sig.keys()) | set(self._last_frames_signature.keys())
+            changed_tables = sorted([t for t in all_tables if frame_sig.get(t) != self._last_frames_signature.get(t)])
+        timings["frame_changed_tables"] = changed_tables
+
+        # 空跑短路：连续两轮输入完全一致，跳过对齐和合并
+        if not force_full and self._last_frames_signature is not None and not changed_tables:
+            timings["align_s"] = 0.0
+            timings["align_rows"] = 0.0
+            timings["merge_s"] = 0.0
+            timings["memory_s"] = 0.0
+            timings["save_s"] = 0.0
+            timings["skipped_align"] = True
+            timings["total_s"] = time.perf_counter() - t_total_start
+            self._last_update_timing = timings
+            if self._timing_log:
+                print(
+                    "[AlignedData.update] "
+                    f"force_full={force_full} read={timings['read_s']:.4f}s "
+                    "align=0.0000s merge=0.0000s memory=0.0000s save=0.0000s "
+                    f"total={timings['total_s']:.4f}s rows_in={int(timings['read_rows'])} "
+                    f"rows_out=0 cache_rows={len(self._data)} skipped_align=True"
+                )
+            return 0
 
         # 对齐数据
-        new_data = align_asof(frames, anchor=self._anchor, tolerance=self._tolerance, direction=self._direction)
+        t0 = time.perf_counter()
+        if force_full:
+            new_data = align_asof(frames, anchor=self._anchor, tolerance=self._tolerance, direction=self._direction)
+        else:
+            new_data = self._align_incremental(frames)
+        timings["align_s"] = time.perf_counter() - t0
+        timings["align_rows"] = float(len(new_data))
+        timings["skipped_align"] = False
+        self._last_frames_signature = frame_sig
 
         if new_data.empty:
+            timings["merge_s"] = 0.0
+            timings["memory_s"] = 0.0
+            timings["save_s"] = 0.0
+            timings["total_s"] = time.perf_counter() - t_total_start
+            self._last_update_timing = timings
+            if self._timing_log:
+                print(
+                    "[AlignedData.update] "
+                    f"force_full={force_full} read={timings['read_s']:.4f}s "
+                    f"align={timings['align_s']:.4f}s merge=0.0000s "
+                    f"memory=0.0000s save=0.0000s total={timings['total_s']:.4f}s "
+                    f"rows_in={int(timings['read_rows'])} rows_out=0 cache_rows={len(self._data)}"
+                )
             return 0
 
         # 合并到缓存
         rows_before = len(self._data)
+        t0 = time.perf_counter()
         self._merge_data(new_data)
+        timings["merge_s"] = time.perf_counter() - t0
         rows_after = len(self._data)
         new_rows = rows_after - rows_before
 
@@ -160,7 +410,27 @@ class AlignedDataCache:
         self._last_update_time = datetime.now()
 
         # 检查内存限制
+        t0 = time.perf_counter()
         self._check_memory_limits()
+        timings["memory_s"] = time.perf_counter() - t0
+
+        # 自动保存
+        t0 = time.perf_counter()
+        if self._auto_save and self._cache_path:
+            self.save(self._cache_path)
+        timings["save_s"] = time.perf_counter() - t0
+
+        timings["total_s"] = time.perf_counter() - t_total_start
+        self._last_update_timing = timings
+        if self._timing_log:
+            print(
+                "[AlignedData.update] "
+                f"force_full={force_full} read={timings['read_s']:.4f}s "
+                f"align={timings['align_s']:.4f}s merge={timings['merge_s']:.4f}s "
+                f"memory={timings['memory_s']:.4f}s save={timings['save_s']:.4f}s "
+                f"total={timings['total_s']:.4f}s rows_in={int(timings['read_rows'])} "
+                f"rows_out={int(timings['align_rows'])} new_rows={new_rows} cache_rows={len(self._data)}"
+            )
 
         return new_rows
 
@@ -173,20 +443,72 @@ class AlignedDataCache:
         2. 按时间索引去重（保留最新）
         3. 自动排序
         """
+        if new_data.empty:
+            return
+
+        # 新数据先去重（保留最新），避免全量 concat 后再去重
+        if new_data.index.has_duplicates:
+            new_data = new_data[~new_data.index.duplicated(keep="last")]
+
         if self._data.empty:
             self._data = new_data.copy()
-        else:
-            # 合并
-            combined = pd.concat([self._data, new_data], axis=0)
+            return
 
-            # 去重：相同时间戳保留最新（来自 new_data）
-            combined = combined[~combined.index.duplicated(keep="last")]
+        data_sorted = self._data.index.is_monotonic_increasing
+        new_sorted = new_data.index.is_monotonic_increasing
 
-            # 只在必要时排序
-            if not combined.index.is_monotonic_increasing:
-                combined = combined.sort_index()
+        def _merge_existing(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
+            overlap = existing.index.intersection(incoming.index)
+            if not overlap.empty:
+                # 仅用 incoming 的非空值覆盖，避免把已有数据替换成 NaN
+                incoming_overlap = incoming.loc[overlap]
+                existing_overlap = existing.loc[overlap, incoming.columns]
+                merged_overlap = incoming_overlap.combine_first(existing_overlap)
+                existing.loc[overlap, incoming.columns] = merged_overlap
 
-            self._data = combined
+            new_idx = incoming.index.difference(existing.index)
+            if not new_idx.empty:
+                existing = pd.concat([existing, incoming.loc[new_idx]], axis=0, copy=False)
+
+            if not existing.index.is_monotonic_increasing:
+                existing = existing.sort_index()
+            return existing
+
+        # 局部合并：利用 lookback 只处理尾部窗口
+        if data_sorted and new_sorted:
+            lookback_td = None
+            if self._lookback is not None:
+                try:
+                    lookback_td = pd.Timedelta(self._lookback)
+                except (ValueError, TypeError):
+                    lookback_td = None
+
+            if lookback_td is not None:
+                try:
+                    new_min = new_data.index[0]
+                except (IndexError, KeyError):
+                    new_min = new_data.index.min()
+
+                cutoff = new_min - lookback_td
+                if cutoff > self._data.index[0]:
+                    start = self._data.index.searchsorted(cutoff, side="left")
+                    if start > 0:
+                        head = self._data.iloc[:start]
+                        tail = self._data.iloc[start:]
+                        merged_tail = _merge_existing(tail, new_data)
+                        self._data = pd.concat([head, merged_tail], axis=0, copy=False)
+                        return
+
+            # 快路径：无重叠、时间递增，直接追加
+            try:
+                if new_data.index[0] > self._data.index[-1]:
+                    self._data = pd.concat([self._data, new_data], axis=0, copy=False)
+                    return
+            except (IndexError, KeyError):
+                pass
+
+        # 常规路径：仅更新重叠索引，再追加新索引，避免全量 concat
+        self._data = _merge_existing(self._data, new_data)
 
     def _check_memory_limits(self):
         """检查并应用内存限制"""
@@ -196,7 +518,10 @@ class AlignedDataCache:
         # 1. 时间窗口限制
         if self._time_window_days is not None:
             cutoff = pd.Timestamp.now() - pd.Timedelta(days=self._time_window_days)
-            self._data = self._data[self._data.index >= cutoff]
+            if self._data.index.is_monotonic_increasing:
+                self._data = self._data.loc[cutoff:]
+            else:
+                self._data = self._data[self._data.index >= cutoff]
 
         # 2. 行数限制
         if self._max_rows is not None and len(self._data) > self._max_rows:
@@ -286,7 +611,22 @@ class AlignedDataCache:
             "total_updates": self._total_updates,
             "total_rows_added": self._total_rows_added,
             "last_update": self._last_update_time,
+            "cache_path": str(self._cache_path) if self._cache_path else None,
+            "auto_save": self._auto_save,
+            "timing_log": self._timing_log,
+            "offline_mode": self._reader is None,
+            "last_update_timing": self._last_update_timing.copy() if self._last_update_timing else None,
         }
+
+    @property
+    def cache_path(self) -> Optional[Path]:
+        """本地缓存文件路径"""
+        return self._cache_path
+
+    @property
+    def is_offline(self) -> bool:
+        """是否为离线模式（无数据库连接）"""
+        return self._reader is None
 
     def save(self, path: Union[str, Path], compression: str = "snappy"):
         """
@@ -360,6 +700,7 @@ class AlignedDataCache:
         else:
             # 替换现有数据
             self._data = loaded_data
+        self._last_frames_signature = None
 
         # 检查内存限制
         self._check_memory_limits()
@@ -371,6 +712,8 @@ class AlignedDataCache:
         self._total_updates = 0
         self._total_rows_added = 0
         self._last_update_time = None
+        self._last_update_timing = {}
+        self._last_frames_signature = None
 
     def reset(self, reset_watermark: bool = False):
         """
@@ -381,21 +724,26 @@ class AlignedDataCache:
         """
         self.clear()
 
-        if reset_watermark:
+        if reset_watermark and self._reader is not None:
             for spec in self._specs:
                 self._reader.reset_watermark(spec.table)
 
     def __repr__(self):
-        if self._data.empty:
-            return f"AlignedDataCache(empty, anchor='{self._anchor}')"
+        mode = "offline" if self._reader is None else "online"
+        cache_info = f", cache='{self._cache_path}'" if self._cache_path else ""
 
+        if self._data.empty:
+            return f"AlignedDataCache(empty, anchor='{self._anchor}', mode={mode}{cache_info})"
+
+        time_range = self.time_range
         return (
             f"AlignedDataCache("
             f"rows={len(self._data)}, "
             f"cols={len(self._data.columns)}, "
-            f"range={self.time_range[0]} to {self.time_range[1]}, "
+            f"range={time_range[0] if time_range else 'N/A'} to {time_range[1] if time_range else 'N/A'}, "
             f"anchor='{self._anchor}', "
-            f"memory={self.memory_usage_mb:.1f}MB)"
+            f"memory={self.memory_usage_mb:.1f}MB, "
+            f"mode={mode}{cache_info})"
         )
 
     def __len__(self):
@@ -580,6 +928,7 @@ class AlignedDataCache:
         temp_columns: Optional[List[str]] = None,
         pressure_columns: Optional[List[str]] = None,
         time_range: Optional[Union[str, Tuple[str, str]]] = None,
+        return_overview: bool = False,
         **kwargs,
     ) -> "go.Figure":
         """
@@ -591,6 +940,7 @@ class AlignedDataCache:
             temp_columns: 温度列名列表（可选，如果为 None 则自动识别）
             pressure_columns: 压强列名列表（可选，如果为 None 则自动识别）
             time_range: 时间范围（可选）
+            return_overview: 是否返回额外的总览图（温度总览 + 压强总览）
             **kwargs: 其他参数传递给 visualizer.plot_temp_pressure_sync
 
         Returns:
@@ -606,11 +956,23 @@ class AlignedDataCache:
             ...     time_range=('2025-12-15', '2025-12-16')
             ... )
             >>> fig.show()
+
+            >>> # 返回额外总览图（压强 + 温度）
+            >>> sync_fig, p_fig, t_fig = cache.plot_temp_pressure_sync(
+            ...     time_range=('2025-12-15', '2025-12-16'),
+            ...     return_overview=True
+            ... )
+            >>> p_fig.show(); t_fig.show()
         """
         from .visualizer import plot_temp_pressure_sync as _plot_temp_pressure_sync
 
         return _plot_temp_pressure_sync(
-            self, temp_columns=temp_columns, pressure_columns=pressure_columns, time_range=time_range, **kwargs
+            self,
+            temp_columns=temp_columns,
+            pressure_columns=pressure_columns,
+            time_range=time_range,
+            return_overview=return_overview,
+            **kwargs,
         )
 
     def refresh_plot(

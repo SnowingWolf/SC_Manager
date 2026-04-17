@@ -1,19 +1,208 @@
 """
 时间对齐模块
 
-使用 pandas.merge_asof 实现多表时间对齐。
+使用时间索引的近似匹配实现多表时间对齐。
 
 核心概念：
 - Anchor 表：以该表的时间轴为基准
-- merge_asof：近似时间匹配，适用于不同采样率的数据
+- asof 匹配：近似时间匹配，适用于不同采样率的数据
 - tolerance：时间容差，超出范围的匹配填充 NaN
 - direction：匹配方向（backward/forward/nearest）
 """
 from typing import Dict, List, Union
 
+import numpy as np
 import pandas as pd
+from numba import njit
 
 from .spec import TableSpec
+
+
+def _is_long_format(df: pd.DataFrame) -> bool:
+    return "timestamp" in df.columns and "variable" in df.columns and "value" in df.columns
+
+
+def _pivot_long_format(df: pd.DataFrame) -> pd.DataFrame:
+    if "timestamp" not in df.columns:
+        df = df.reset_index()
+    if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+        df = df.copy()
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df.pivot_table(
+        index="timestamp",
+        columns="variable",
+        values="value",
+        aggfunc="first",
+    )
+
+
+def _ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+    if isinstance(df.index, pd.DatetimeIndex):
+        return df
+    time_col = "timestamp" if "timestamp" in df.columns else df.columns[0]
+    if not pd.api.types.is_datetime64_any_dtype(df[time_col]):
+        df = df.copy()
+        df[time_col] = pd.to_datetime(df[time_col])
+    return df.set_index(time_col)
+
+
+def _prepare_frame(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+    if _is_long_format(df):
+        df = _pivot_long_format(df)
+    else:
+        df = _ensure_datetime_index(df)
+    if not df.index.is_monotonic_increasing:
+        df = df.sort_index()
+    if df.columns.size:
+        rename_map = {col: f"{table_name}__{col}" for col in df.columns}
+        df = df.rename(columns=rename_map)
+    return df
+
+
+@njit(cache=True)
+def _nb_backward_indexer(left_ns: np.ndarray, right_ns: np.ndarray) -> np.ndarray:
+    """返回 backward 匹配位置（right 中 <= left 的最后一个）。"""
+    out = np.empty(left_ns.size, dtype=np.int64)
+    out.fill(-1)
+
+    j = 0
+    n = right_ns.size
+    for i in range(left_ns.size):
+        lv = left_ns[i]
+        while j < n and right_ns[j] <= lv:
+            j += 1
+        out[i] = j - 1
+    return out
+
+
+@njit(cache=True)
+def _nb_forward_indexer(left_ns: np.ndarray, right_ns: np.ndarray) -> np.ndarray:
+    """返回 forward 匹配位置（right 中 >= left 的第一个）。"""
+    out = np.empty(left_ns.size, dtype=np.int64)
+    out.fill(-1)
+
+    j = 0
+    n = right_ns.size
+    for i in range(left_ns.size):
+        lv = left_ns[i]
+        while j < n and right_ns[j] < lv:
+            j += 1
+        if j < n:
+            out[i] = j
+    return out
+
+
+@njit(cache=True)
+def _nb_nearest_indexer(left_ns: np.ndarray, right_ns: np.ndarray) -> np.ndarray:
+    """
+    返回 nearest 匹配位置。
+    等距时优先 backward（与 pandas.merge_asof(nearest) 一致）。
+    """
+    back = _nb_backward_indexer(left_ns, right_ns)
+    fwd = _nb_forward_indexer(left_ns, right_ns)
+
+    out = np.empty(left_ns.size, dtype=np.int64)
+    out.fill(-1)
+    for i in range(left_ns.size):
+        b = back[i]
+        f = fwd[i]
+        if b >= 0 and f >= 0:
+            db = left_ns[i] - right_ns[b]
+            if db < 0:
+                db = -db
+            df = right_ns[f] - left_ns[i]
+            if df < 0:
+                df = -df
+            if df < db:
+                out[i] = f
+            else:
+                out[i] = b
+        elif b >= 0:
+            out[i] = b
+        elif f >= 0:
+            out[i] = f
+    return out
+
+
+@njit(cache=True)
+def _nb_apply_tolerance(
+    left_ns: np.ndarray, right_ns: np.ndarray, pos: np.ndarray, tol_ns: int
+) -> np.ndarray:
+    out = pos.copy()
+    for i in range(out.size):
+        p = out[i]
+        if p >= 0:
+            d = left_ns[i] - right_ns[p]
+            if d < 0:
+                d = -d
+            if d > tol_ns:
+                out[i] = -1
+    return out
+
+
+def _asof_indexer(
+    left_index: pd.DatetimeIndex,
+    right_index: pd.DatetimeIndex,
+    direction: str,
+    tolerance: Union[None, pd.Timedelta],
+) -> np.ndarray:
+    """
+    线性时间复杂度的 asof 索引匹配器。
+
+    Returns:
+        每个 left 行对应的 right 行位置，未匹配为 -1
+    """
+    left_ns = left_index.asi8
+    right_ns = right_index.asi8
+
+    if right_ns.size == 0:
+        return np.full(left_ns.size, -1, dtype=np.int64)
+
+    if direction == "backward":
+        pos = _nb_backward_indexer(left_ns, right_ns)
+    elif direction == "forward":
+        pos = _nb_forward_indexer(left_ns, right_ns)
+    elif direction == "nearest":
+        pos = _nb_nearest_indexer(left_ns, right_ns)
+    else:
+        raise ValueError("direction 必须是 'backward'、'forward' 或 'nearest'")
+
+    if tolerance is None:
+        return pos
+
+    tol_ns = int(tolerance.value)
+    if tol_ns < 0:
+        raise ValueError("tolerance 必须 >= 0")
+
+    return _nb_apply_tolerance(left_ns, right_ns, pos, tol_ns)
+
+
+def _merge_asof_linear(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    direction: str,
+    tolerance: Union[None, pd.Timedelta],
+) -> pd.DataFrame:
+    """用双指针线性匹配实现 DataFrame 的 asof 合并。"""
+    if right.empty:
+        filler = right.iloc[:0].reindex(left.index)
+        return pd.concat([left, filler], axis=1)
+
+    pos = _asof_indexer(left.index, right.index, direction=direction, tolerance=tolerance)
+    matched = pos >= 0
+
+    safe_pos = pos.copy()
+    safe_pos[~matched] = 0
+
+    # iloc 取行后对齐到 left 索引，未匹配行置 NaN
+    taken = right.iloc[safe_pos].copy()
+    taken.index = left.index
+    if not matched.all():
+        taken.loc[~matched, :] = np.nan
+
+    return pd.concat([left, taken], axis=1)
 
 
 def align_asof(
@@ -23,7 +212,7 @@ def align_asof(
     direction: str = 'backward'
 ) -> pd.DataFrame:
     """
-    使用 merge_asof 对齐多个表的数据
+    使用 asof 规则对齐多个表的数据
 
     以 anchor 表为时间基准，将其他表的数据按时间匹配合并。
     非 anchor 表的列自动添加 {table}__ 前缀避免冲突。
@@ -75,79 +264,29 @@ def align_asof(
     if anchor_df.empty:
         return pd.DataFrame()
 
-    # 解析 tolerance
+    if direction not in {"backward", "forward", "nearest"}:
+        raise ValueError("direction 必须是 'backward'、'forward' 或 'nearest'")
+
+    # 解析 tolerance（None 表示不限制）
     if isinstance(tolerance, str):
         tolerance = pd.Timedelta(tolerance)
 
     # 准备 anchor 表
-    result = anchor_df.reset_index()
-    time_col = result.columns[0]
-    
-    # 检查是否是长表格式（有 timestamp, variable, value 列）
-    if "timestamp" in result.columns and "variable" in result.columns and "value" in result.columns:
-        # 长表格式：转换为宽表格式（pivot）
-        time_col = "timestamp"
-        result = result.pivot_table(
-            index=time_col,
-            columns="variable",
-            values="value",
-            aggfunc='first'  # 如果有重复，取第一个
-        ).reset_index()
-        time_col = result.columns[0]
-    
-    result[time_col] = pd.to_datetime(result[time_col])
-
-    # 为 anchor 表列添加前缀
-    rename_map = {col: f'{anchor}__{col}' for col in result.columns if col != time_col}
-    result = result.rename(columns=rename_map)
+    result = _prepare_frame(anchor_df, anchor)
 
     # 对齐其他表
     for table_name, df in frames.items():
         if table_name == anchor or df.empty:
             continue
+        right = _prepare_frame(df, table_name)
 
-        right = df.reset_index()
-        right_time_col = right.columns[0]
-        
-        # 检查是否是长表格式
-        if "timestamp" in right.columns and "variable" in right.columns and "value" in right.columns:
-            # 转换为宽表格式
-            right_time_col = "timestamp"
-            right = right.pivot_table(
-                index=right_time_col,
-                columns="variable",
-                values="value",
-                aggfunc='first'
-            ).reset_index()
-            right_time_col = right.columns[0]
-        
-        right[right_time_col] = pd.to_datetime(right[right_time_col])
-
-        # 添加前缀
-        right_rename = {col: f'{table_name}__{col}' for col in right.columns if col != right_time_col}
-        right = right.rename(columns=right_rename)
-
-        # 排序（merge_asof 要求），但只在必要时排序
-        if not result[time_col].is_monotonic_increasing:
-            result = result.sort_values(time_col)
-        if not right[right_time_col].is_monotonic_increasing:
-            right = right.sort_values(right_time_col)
-
-        # merge_asof
-        result = pd.merge_asof(
+        result = _merge_asof_linear(
             result,
             right,
-            left_on=time_col,
-            right_on=right_time_col,
             direction=direction,
-            tolerance=tolerance
+            tolerance=tolerance,
         )
-
-        # 删除右表时间列
-        if right_time_col in result.columns and right_time_col != time_col:
-            result = result.drop(columns=[right_time_col])
-
-    return result.set_index(time_col)
+    return result
 
 
 def collect_and_align(

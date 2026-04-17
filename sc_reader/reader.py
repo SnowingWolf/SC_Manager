@@ -33,9 +33,9 @@ def _parse_timedelta(s: str) -> timedelta:
     """
     解析时间字符串为 timedelta
 
-    支持: '200ms', '2s', '5m', '1h', '500us'
+    支持: '200ms', '2s', '5m', '1h', '1d', '500us'
     """
-    match = re.match(r"^(\d+(?:\.\d+)?)\s*(ms|us|s|m|h)$", s.lower())
+    match = re.match(r"^(\d+(?:\.\d+)?)\s*(ms|us|s|m|h|d)$", s.lower())
     if not match:
         raise ValueError(f"无法解析时间: '{s}'")
 
@@ -48,6 +48,7 @@ def _parse_timedelta(s: str) -> timedelta:
         "s": timedelta(seconds=value),
         "m": timedelta(minutes=value),
         "h": timedelta(hours=value),
+        "d": timedelta(days=value),
     }
     return unit_map[unit]
 
@@ -74,13 +75,22 @@ class SCReader:
         >>> df_new = reader.read_incremental(spec)  # 只返回新数据
     """
 
-    def __init__(self, config: Optional[MySQLConfig] = None, state_path: Optional[str] = None, **kwargs):
+    _MAX_READ_MULTIPLE_WORKERS = 8
+
+    def __init__(
+        self,
+        config: Optional[MySQLConfig] = None,
+        state_path: Optional[str] = None,
+        time_zone: Optional[str] = "Asia/Shanghai",
+        **kwargs,
+    ):
         """
         初始化慢控数据读取器
 
         Args:
             config: MySQL 配置，None 使用默认配置
             state_path: watermark 持久化路径（用于增量读取）
+            time_zone: 时间列统一时区；None 表示保持原始（naive）
             **kwargs: MySQL 连接参数（可覆盖 config）
                 - host: 数据库主机
                 - user: 用户名
@@ -117,14 +127,49 @@ class SCReader:
         self.conn = pymysql.connect(**init_kwargs)
         self.cursor = self.conn.cursor()
 
+        # 时间处理配置
+        self._time_zone = time_zone
+
         # 增量读取相关
         self.state_path = state_path
         # watermark: {table: {'last_ts': datetime, 'last_id': Any}}
         self._watermarks: Dict[str, Dict[str, Any]] = {}
+        # 表结构缓存（避免同一轮增量里重复 DESCRIBE）
+        self._table_info_cache: Dict[str, pd.DataFrame] = {}
+        self._time_col_cache: Dict[str, str] = {}
 
         # 加载已有状态
         if state_path:
             self.load_state(state_path)
+
+    def _normalize_ts(self, ts: Any) -> Optional[datetime]:
+        """Normalize timestamps to match reader timezone (avoid naive/aware compare errors)."""
+        if ts is None:
+            return None
+        try:
+            if pd.isna(ts):
+                return None
+        except Exception:
+            pass
+
+        try:
+            ts = pd.Timestamp(ts)
+        except Exception:
+            return ts
+
+        if self._time_zone:
+            if ts.tzinfo is None:
+                ts = ts.tz_localize(self._time_zone, nonexistent="shift_forward", ambiguous="NaT")
+            else:
+                ts = ts.tz_convert(self._time_zone)
+        else:
+            if ts.tzinfo is not None:
+                ts = ts.tz_convert("UTC").tz_localize(None)
+
+        if ts is pd.NaT:
+            return None
+
+        return ts.to_pydatetime()
 
     # ==================== 连接管理 ====================
 
@@ -171,7 +216,7 @@ class SCReader:
         self.cursor.execute(sql)
         return self.cursor.fetchall()
 
-    def query_df(self, sql, time_column=None, chunksize=None):
+    def _query_df(self, sql, time_column=None, chunksize=None, time_unit=None, time_zone=None):
         """
         执行 SQL 并返回 DataFrame，支持分块读取
 
@@ -179,11 +224,14 @@ class SCReader:
             sql: SQL 查询语句
             time_column: 时间列名，如果为 None 则自动检测
             chunksize: 分块读取的大小
+            time_unit: 时间单位（仅当时间列为 BIGINT 时使用），如 's'/'ms'/'us'
+            time_zone: 统一时区，None 表示保持原始（naive）
 
         Returns:
             DataFrame 或生成器（如果使用 chunksize）
         """
         self._ensure_connection()
+        tz = self._time_zone if time_zone is None else time_zone
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*pandas only supports SQLAlchemy.*")
@@ -207,7 +255,13 @@ class SCReader:
                 else:
                     time_col = time_column
 
-                chunk[time_col] = pd.to_datetime(chunk[time_col])
+                dt = pd.to_datetime(chunk[time_col], unit=time_unit) if time_unit else pd.to_datetime(chunk[time_col])
+                if tz:
+                    if dt.dt.tz is None:
+                        dt = dt.dt.tz_localize(tz, nonexistent="shift_forward", ambiguous="NaT")
+                    else:
+                        dt = dt.dt.tz_convert(tz)
+                chunk[time_col] = dt
                 chunk = chunk.set_index([time_col])
                 return chunk
 
@@ -228,7 +282,13 @@ class SCReader:
             else:
                 time_col = time_column
 
-            df[time_col] = pd.to_datetime(df[time_col])
+            dt = pd.to_datetime(df[time_col], unit=time_unit) if time_unit else pd.to_datetime(df[time_col])
+            if tz:
+                if dt.dt.tz is None:
+                    dt = dt.dt.tz_localize(tz, nonexistent="shift_forward", ambiguous="NaT")
+                else:
+                    dt = dt.dt.tz_convert(tz)
+            df[time_col] = dt
             df = df.set_index([time_col])
             return df
 
@@ -273,12 +333,16 @@ class SCReader:
             >>> print(columns)
         """
         self._ensure_connection()
-        # 使用反引号包围表名，防止特殊字符（如连字符）导致SQL错误
-        self.cursor.execute(f"DESCRIBE `{table_name}`;")
-        result = self.cursor.fetchall()
+        cached = self._table_info_cache.get(table_name)
+        if cached is None:
+            # 使用反引号包围表名，防止特殊字符（如连字符）导致SQL错误
+            self.cursor.execute(f"DESCRIBE `{table_name}`;")
+            result = self.cursor.fetchall()
+            cached = pd.DataFrame(result, columns=["Field", "Type", "Null", "Key", "Default", "Extra"])
+            self._table_info_cache[table_name] = cached
         if columns_only:
-            return [row[0] for row in result]
-        return pd.DataFrame(result, columns=["Field", "Type", "Null", "Key", "Default", "Extra"])
+            return cached["Field"].tolist()
+        return cached.copy()
 
     def preview_table_data(self, table_name: str, limit: int = 5) -> pd.DataFrame:
         """
@@ -299,7 +363,7 @@ class SCReader:
         time_col = self._get_time_column(table_name)
         # 使用反引号包围表名，防止特殊字符（如连字符）导致SQL错误
         sql = f"SELECT * FROM `{table_name}` LIMIT {limit};"
-        return self.query_df(sql, time_column=time_col)
+        return self._query_df(sql, time_column=time_col)
 
     def _query_single_table(
         self,
@@ -322,8 +386,20 @@ class SCReader:
         Returns:
             包含查询结果的 DataFrame，索引为时间列
         """
+        # 获取表结构信息（只查询一次）
+        table_info = self.get_table_info(table_name)
+        all_columns = table_info["Field"].tolist()
+
         # 获取时间列名
-        time_col = self._get_time_column(table_name)
+        time_col = self._detect_time_column(all_columns, table_name)
+
+        # 检查时间列类型
+        time_col_info = table_info[table_info["Field"] == time_col]
+        is_bigint_type = False
+        if not time_col_info.empty:
+            col_type = str(time_col_info.iloc[0]["Type"]).lower()
+            if "bigint" in col_type or "int" in col_type:
+                is_bigint_type = True
 
         # 构建 SELECT 子句
         if columns:
@@ -337,59 +413,40 @@ class SCReader:
             select_clause = "*"
             user_columns = None  # 表示查询所有列
 
-        # 构建 WHERE 子句
-        # 检查时间列的类型，如果是字符串类型（varchar），需要使用 STR_TO_DATE 进行转换
-        table_info = self.get_table_info(table_name)
-        time_col_info = table_info[table_info["Field"] == time_col]
-        is_string_type = False
-        if not time_col_info.empty:
-            col_type = str(time_col_info.iloc[0]["Type"]).lower()
-            if "varchar" in col_type or "char" in col_type or "text" in col_type:
-                is_string_type = True
-
         where_conditions = []
         if start_time:
-            # 将输入时间转换为标准格式
+            # 解析时间
             if isinstance(start_time, datetime):
-                start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+                start_dt = start_time
             else:
-                # 尝试解析并转换格式
-                try:
-                    dt = pd.to_datetime(start_time)
-                    start_time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                except (ValueError, TypeError):
-                    start_time_str = str(start_time)
+                start_dt = pd.to_datetime(start_time)
 
-            if is_string_type:
-                # 字符串类型时间列：使用直接字符串比较（假设格式为 'YYYY-MM-DD HH:MM:SS'）
-                # 避免 STR_TO_DATE 格式不匹配的问题
-                where_conditions.append(f"`{time_col}` >= '{start_time_str}'")
+            if is_bigint_type:
+                # BIGINT 类型：转换为 Unix 时间戳（秒）
+                start_ts = int(start_dt.timestamp())
+                where_conditions.append(f"`{time_col}` >= {start_ts}")
             else:
-                # 如果时间列是 datetime 类型，直接比较
+                # DATETIME 或字符串类型：使用字符串比较
+                start_time_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
                 where_conditions.append(f"`{time_col}` >= '{start_time_str}'")
 
         if end_time:
-            # 将输入时间转换为标准格式
+            # 解析时间
             if isinstance(end_time, datetime):
-                end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+                end_dt = end_time
             else:
-                # 尝试解析并转换格式
-                try:
-                    dt = pd.to_datetime(end_time)
-                    # 如果是日期，设置为当天的结束时间
-                    if len(str(end_time).strip()) <= 10:  # 只有日期部分
-                        end_time_str = dt.strftime("%Y-%m-%d 23:59:59")
-                    else:
-                        end_time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                except (ValueError, TypeError):
-                    end_time_str = str(end_time)
+                end_dt = pd.to_datetime(end_time)
+                # 如果只有日期部分，设置为当天结束
+                if len(str(end_time).strip()) <= 10:
+                    end_dt = end_dt.replace(hour=23, minute=59, second=59)
 
-            if is_string_type:
-                # 字符串类型时间列：使用直接字符串比较（假设格式为 'YYYY-MM-DD HH:MM:SS'）
-                # 避免 STR_TO_DATE 格式不匹配的问题
-                where_conditions.append(f"`{time_col}` <= '{end_time_str}'")
+            if is_bigint_type:
+                # BIGINT 类型：转换为 Unix 时间戳（秒）
+                end_ts = int(end_dt.timestamp())
+                where_conditions.append(f"`{time_col}` <= {end_ts}")
             else:
-                # 如果时间列是 datetime 类型，直接比较
+                # DATETIME 或字符串类型：使用字符串比较
+                end_time_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
                 where_conditions.append(f"`{time_col}` <= '{end_time_str}'")
 
         where_clause = " AND ".join(where_conditions) if where_conditions else "1=1"
@@ -399,7 +456,7 @@ class SCReader:
         sql = f"SELECT {select_clause} FROM `{table_name}` WHERE {where_clause} ORDER BY `{time_col}`;"
 
         # 执行查询
-        df = self.query_df(sql, time_column=time_col, chunksize=chunksize)
+        df = self._query_df(sql, time_column=time_col, chunksize=chunksize)
 
         # 如果用户指定了列，只返回用户指定的列（时间列已经是索引了，不需要在列中）
         if user_columns is not None:
@@ -410,7 +467,7 @@ class SCReader:
 
         return df
 
-    def query_by_time(
+    def query_df(
         self,
         table_name: Union[str, List[str]],
         start_time: Optional[Union[str, datetime]] = None,
@@ -423,8 +480,10 @@ class SCReader:
 
         Args:
             table_name: 表名（字符串）或表名列表。如果是列表，将从所有表中查询并合并结果
-            start_time: 开始时间，格式如 '2025-01-01' 或 '2025-01-01 00:00:00'
-            end_time: 结束时间，格式如 '2025-01-31' 或 '2025-01-31 23:59:59'
+            start_time: 开始时间，格式如 '2025-01-01' 或 '2025-01-01 00:00:00'。
+                        如果不指定 start_time 和 end_time，则查询整个表
+            end_time: 结束时间，格式如 '2025-01-31' 或 '2025-01-31 23:59:59'。
+                      如果不指定 start_time 和 end_time，则查询整个表
             columns: 要查询的列名列表，默认查询所有列
             chunksize: 分块读取的大小，用于大数据量查询
 
@@ -432,11 +491,14 @@ class SCReader:
             包含查询结果的 DataFrame，索引为时间列。如果查询多个表，结果会按时间排序并合并
 
         Examples:
-            >>> # 查询单个表的所有列
-            >>> data = reader.query_by_time('temperature_table', '2025-01-01', '2025-01-31')
+            >>> # 查询整个表（不指定时间范围）
+            >>> data = reader.query_df('temperature_table')
+
+            >>> # 查询单个表的所有列（指定时间范围）
+            >>> data = reader.query_df('temperature_table', '2025-01-01', '2025-01-31')
 
             >>> # 查询特定列
-            >>> data = reader.query_by_time(
+            >>> data = reader.query_df(
             ...     'temperature_table',
             ...     start_time='2025-01-01',
             ...     end_time='2025-01-31',
@@ -444,7 +506,7 @@ class SCReader:
             ... )
 
             >>> # 查询多个表
-            >>> data = reader.query_by_time(
+            >>> data = reader.query_df(
             ...     ['piddata', 'tempdata'],
             ...     start_time='2025-01-01',
             ...     end_time='2025-01-31'
@@ -553,8 +615,25 @@ class SCReader:
         Raises:
             ValueError: 如果找不到时间列
         """
+        cached = self._time_col_cache.get(table_name)
+        if cached is not None:
+            return cached
         columns = self.get_table_info(table_name, columns_only=True)
+        detected = self._detect_time_column(columns, table_name)
+        self._time_col_cache[table_name] = detected
+        return detected
 
+    def _detect_time_column(self, columns: List[str], table_name: str = "unknown") -> str:
+        """
+        从列名列表中检测时间列（不查询数据库）
+
+        Args:
+            columns: 列名列表
+            table_name: 表名（仅用于错误信息）
+
+        Returns:
+            时间列名
+        """
         # 常见的时间列名模式（按优先级排序）
         time_patterns = ["Time(s)", "timestamp", "time", "datetime", "ts", "date_time", "Time", "TIME"]
 
@@ -584,10 +663,12 @@ class SCReader:
     def _update_watermark(self, table: str, last_ts: datetime, last_id: Any = None):
         """更新 watermark"""
         wm = self._get_watermark(table)
-        if wm["last_ts"] is None or last_ts > wm["last_ts"]:
+        last_ts = self._normalize_ts(last_ts)
+        wm_ts = self._normalize_ts(wm["last_ts"])
+        if wm_ts is None or (last_ts is not None and last_ts > wm_ts):
             wm["last_ts"] = last_ts
             wm["last_id"] = last_id
-        elif last_ts == wm["last_ts"] and last_id is not None:
+        elif last_ts is not None and wm_ts is not None and last_ts == wm_ts and last_id is not None:
             if wm["last_id"] is None or last_id > wm["last_id"]:
                 wm["last_id"] = last_id
 
@@ -677,7 +758,7 @@ class SCReader:
         sql = f"SELECT {select_clause} FROM `{table}` WHERE {where_clause} ORDER BY `{time_col}`"
 
         # 执行查询
-        df = self.query_df(sql, time_column=time_col, chunksize=chunksize)
+        df = self._query_df(sql, time_column=time_col, chunksize=chunksize)
 
         # 处理分块读取
         if chunksize is not None:
@@ -731,13 +812,46 @@ class SCReader:
             ... ]
             >>> results = reader.read_multiple(specs, lookback='2s')
         """
+        if not specs:
+            return {}
+
+        import threading
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=len(specs)) as executor:
-            futures = {
-                spec.table: executor.submit(self.read_incremental, spec, lookback)
-                for spec in specs
-            }
+        # 用于线程安全地更新 watermark
+        watermark_lock = threading.Lock()
+
+        def read_single(spec: TableSpec) -> pd.DataFrame:
+            """使用独立连接读取单个表"""
+            # 创建临时 reader（独立连接）
+            temp_reader = SCReader(
+                host=self._host,
+                user=self._user,
+                password=self._password,
+                database=self._database,
+                port=self._port,
+                charset=self._charset,
+                time_zone=self._time_zone,
+            )
+            try:
+                # 复制当前表的 watermark 状态
+                if spec.table in self._watermarks:
+                    temp_reader._watermarks[spec.table] = self._watermarks[spec.table].copy()
+
+                result = temp_reader.read_incremental(spec, lookback)
+
+                # 线程安全地同步 watermark 回主 reader
+                with watermark_lock:
+                    if spec.table in temp_reader._watermarks:
+                        self._watermarks[spec.table] = temp_reader._watermarks[spec.table]
+
+                return result
+            finally:
+                temp_reader.conn.close()
+
+        max_workers = min(len(specs), self._MAX_READ_MULTIPLE_WORKERS)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {spec.table: executor.submit(read_single, spec) for spec in specs}
             return {table: future.result() for table, future in futures.items()}
 
     def reset_watermark(self, table: Optional[str] = None):

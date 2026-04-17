@@ -15,25 +15,26 @@
 - tempdata: 温度传感器 (timestamp datetime, anchor)
 """
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
-import time
 
 import pandas as pd
 
-from .spec import TableSpec
-from .reader import SCReader
 from .align import align_asof
+from .reader import SCReader
+from .spec import TableSpec
 
 
 class TriggerType(Enum):
     """触发类型"""
-    RISING_EDGE = 'rising_edge'    # 0 -> 1
-    FALLING_EDGE = 'falling_edge'  # 1 -> 0
-    BOTH_EDGE = 'both_edge'        # 0 -> 1 或 1 -> 0
-    STEP_CHANGE = 'step_change'    # 值变化超过阈值
+
+    RISING_EDGE = "rising_edge"  # 0 -> 1
+    FALLING_EDGE = "falling_edge"  # 1 -> 0
+    BOTH_EDGE = "both_edge"  # 0 -> 1 或 1 -> 0
+    STEP_CHANGE = "step_change"  # 值变化超过阈值
 
 
 @dataclass
@@ -49,6 +50,7 @@ class EventSpec:
         threshold: 阈值（用于 STEP_CHANGE）
         enabled: 是否启用
     """
+
     name: str
     table: str
     column: str
@@ -73,6 +75,7 @@ class Event:
         value_to: 变化后的值
         metadata: 额外元数据
     """
+
     event_id: int
     event_type: str
     event_time: datetime
@@ -84,8 +87,10 @@ class Event:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __repr__(self):
-        return (f"Event(id={self.event_id}, type='{self.event_type}', "
-                f"time={self.event_time}, {self.trigger_col}: {self.value_from}->{self.value_to})")
+        return (
+            f"Event(id={self.event_id}, type='{self.event_type}', "
+            f"time={self.event_time}, {self.trigger_col}: {self.value_from}->{self.value_to})"
+        )
 
 
 @dataclass
@@ -101,12 +106,13 @@ class WindowConfig:
         direction: 对齐方向
         ffill_tables: 需要 forward-fill 的表
     """
+
     pre_seconds: float = 30.0
     post_seconds: float = 120.0
-    anchor_table: str = 'tempdata'
-    tolerance: str = '2s'
-    direction: str = 'backward'
-    ffill_tables: List[str] = field(default_factory=lambda: ['statedata'])
+    anchor_table: str = "tempdata"
+    tolerance: str = "2s"
+    direction: str = "backward"
+    ffill_tables: List[str] = field(default_factory=lambda: ["statedata"])
 
 
 class EventDetector:
@@ -136,21 +142,14 @@ class EventDetector:
         table: str,
         column: str,
         trigger_type: TriggerType = TriggerType.RISING_EDGE,
-        enabled: bool = True
+        enabled: bool = True,
     ):
         """添加开关沿触发事件"""
         if trigger_type not in (TriggerType.RISING_EDGE, TriggerType.FALLING_EDGE, TriggerType.BOTH_EDGE):
             raise ValueError("Edge trigger 必须是 RISING_EDGE/FALLING_EDGE/BOTH_EDGE")
         self._specs[name] = EventSpec(name, table, column, trigger_type, enabled=enabled)
 
-    def add_step_trigger(
-        self,
-        name: str,
-        table: str,
-        column: str,
-        threshold: float = 0.5,
-        enabled: bool = True
-    ):
+    def add_step_trigger(self, name: str, table: str, column: str, threshold: float = 0.5, enabled: bool = True):
         """添加设定值阶跃触发事件"""
         self._specs[name] = EventSpec(name, table, column, TriggerType.STEP_CHANGE, threshold, enabled)
 
@@ -213,23 +212,17 @@ class EventDetector:
 
         return events
 
-    def _check_trigger(
-        self,
-        spec: EventSpec,
-        event_time: datetime,
-        value_from: Any,
-        value_to: Any
-    ) -> Optional[Event]:
+    def _check_trigger(self, spec: EventSpec, event_time: datetime, value_from: Any, value_to: Any) -> Optional[Event]:
         """检查是否触发事件"""
         triggered = False
 
         if spec.trigger_type == TriggerType.RISING_EDGE:
             # 0 -> 1 (或 0 -> 非0)
-            triggered = (value_from == 0 and value_to != 0)
+            triggered = value_from == 0 and value_to != 0
 
         elif spec.trigger_type == TriggerType.FALLING_EDGE:
             # 1 -> 0 (或 非0 -> 0)
-            triggered = (value_from != 0 and value_to == 0)
+            triggered = value_from != 0 and value_to == 0
 
         elif spec.trigger_type == TriggerType.BOTH_EDGE:
             # 任意边沿
@@ -253,7 +246,7 @@ class EventDetector:
                 trigger_col=spec.column,
                 trigger_type=spec.trigger_type,
                 value_from=value_from,
-                value_to=value_to
+                value_to=value_to,
             )
 
         return None
@@ -280,7 +273,7 @@ class EventWindowReader:
         self,
         reader: SCReader,
         config: Optional[WindowConfig] = None,
-        table_specs: Optional[Dict[str, TableSpec]] = None
+        table_specs: Optional[Dict[str, TableSpec]] = None,
     ):
         """
         初始化窗口读取器
@@ -295,10 +288,10 @@ class EventWindowReader:
 
         # 默认表规格
         self.table_specs = table_specs or {
-            'tempdata': TableSpec('tempdata', 'timestamp', key_col='id'),
-            'runlidata': TableSpec('runlidata', 'timestamp', key_col='id'),
-            'statedata': TableSpec('statedata', 'timestamp', key_col='id'),
-            'piddata': TableSpec('piddata', 'timestamp', key_col='id'),
+            "tempdata": TableSpec("tempdata", "timestamp", key_col="id"),
+            "runlidata": TableSpec("runlidata", "timestamp", key_col="id"),
+            "statedata": TableSpec("statedata", "timestamp", key_col="id"),
+            "piddata": TableSpec("piddata", "timestamp", key_col="id"),
         }
 
     def read_window(self, event: Event) -> pd.DataFrame:
@@ -331,54 +324,44 @@ class EventWindowReader:
             return pd.DataFrame()
 
         # 对齐合并
-        aligned = align_asof(
-            frames,
-            anchor=anchor,
-            tolerance=self.config.tolerance,
-            direction=self.config.direction
-        )
+        aligned = align_asof(frames, anchor=anchor, tolerance=self.config.tolerance, direction=self.config.direction)
 
         if aligned.empty:
             return aligned
 
         # 对 statedata 列做 forward-fill
         for table in self.config.ffill_tables:
-            ffill_cols = [c for c in aligned.columns if c.startswith(f'{table}__')]
+            ffill_cols = [c for c in aligned.columns if c.startswith(f"{table}__")]
             if ffill_cols:
                 aligned[ffill_cols] = aligned[ffill_cols].ffill()
 
         # 添加 t_seconds 列
         aligned = aligned.reset_index()
         time_col = aligned.columns[0]
-        aligned['t_seconds'] = (aligned[time_col] - event_time).dt.total_seconds()
+        aligned["t_seconds"] = (aligned[time_col] - event_time).dt.total_seconds()
 
         # 重命名时间列
-        aligned = aligned.rename(columns={time_col: 'timestamp'})
+        aligned = aligned.rename(columns={time_col: "timestamp"})
 
         # 添加事件元数据
-        aligned['event_id'] = event.event_id
-        aligned['event_type'] = event.event_type
-        aligned['event_time'] = event_time
+        aligned["event_id"] = event.event_id
+        aligned["event_type"] = event.event_type
+        aligned["event_time"] = event_time
 
         return aligned
 
-    def _read_table_window(
-        self,
-        spec: TableSpec,
-        start_time: datetime,
-        end_time: datetime
-    ) -> pd.DataFrame:
+    def _read_table_window(self, spec: TableSpec, start_time: datetime, end_time: datetime) -> pd.DataFrame:
         """读取单表的时间窗口数据"""
         table = spec.table
-        time_col = spec.time_col or 'timestamp'
+        time_col = spec.time_col or "timestamp"
 
         # 构建 SQL
-        start_str = start_time.strftime('%Y-%m-%d %H:%M:%S')
-        end_str = end_time.strftime('%Y-%m-%d %H:%M:%S')
+        start_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        end_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
 
         # 使用 reader 的底层查询
         # 注意 piddata 的时间列是 varchar，需要特殊处理
-        if table == 'piddata':
+        if table == "piddata":
             # varchar 时间列，直接字符串比较（格式一致时有效）
             sql = f"""
                 SELECT * FROM `{table}`
@@ -396,7 +379,7 @@ class EventWindowReader:
             """
 
         try:
-            df = self.reader.query_df(sql, time_column=time_col)
+            df = self.reader._query_df(sql, time_column=time_col)
             return df
         except Exception as e:
             print(f"读取 {table} 窗口数据失败: {e}")
@@ -411,7 +394,7 @@ def run_event_monitor(
     table_specs: Optional[Dict[str, TableSpec]] = None,
     monitor_tables: Optional[List[str]] = None,
     poll_interval: float = 5.0,
-    lookback: str = '2s'
+    lookback: str = "2s",
 ):
     """
     运行事件监控
@@ -440,14 +423,14 @@ def run_event_monitor(
         >>> run_event_monitor(reader, detector, handle_event)
     """
     window_config = window_config or WindowConfig()
-    monitor_tables = monitor_tables or ['statedata', 'runlidata']
+    monitor_tables = monitor_tables or ["statedata", "runlidata"]
 
     # 默认表规格
     default_specs = {
-        'tempdata': TableSpec('tempdata', 'timestamp', key_col='id'),
-        'runlidata': TableSpec('runlidata', 'timestamp', key_col='id'),
-        'statedata': TableSpec('statedata', 'timestamp', key_col='id'),
-        'piddata': TableSpec('piddata', 'timestamp', key_col='id'),
+        "tempdata": TableSpec("tempdata", "timestamp", key_col="id"),
+        "runlidata": TableSpec("runlidata", "timestamp", key_col="id"),
+        "statedata": TableSpec("statedata", "timestamp", key_col="id"),
+        "piddata": TableSpec("piddata", "timestamp", key_col="id"),
     }
     table_specs = table_specs or default_specs
 
@@ -478,7 +461,7 @@ def run_event_monitor(
 
                 # 处理每个事件
                 for event in events:
-                    ts = datetime.now().strftime('%H:%M:%S')
+                    ts = datetime.now().strftime("%H:%M:%S")
                     print(f"[{ts}] 检测到事件: {event}")
 
                     try:
@@ -512,7 +495,7 @@ def create_default_detector() -> EventDetector:
     - coldwater_change: coldwater_Set 变化 >= 0.5
     """
     detector = EventDetector()
-    detector.add_edge_trigger('valve_open', 'statedata', 'Valve_N2', TriggerType.RISING_EDGE)
-    detector.add_edge_trigger('valve_close', 'statedata', 'Valve_N2', TriggerType.FALLING_EDGE)
-    detector.add_step_trigger('coldwater_change', 'runlidata', 'coldwater_Set', threshold=0.5)
+    detector.add_edge_trigger("valve_open", "statedata", "Valve_N2", TriggerType.RISING_EDGE)
+    detector.add_edge_trigger("valve_close", "statedata", "Valve_N2", TriggerType.FALLING_EDGE)
+    detector.add_step_trigger("coldwater_change", "runlidata", "coldwater_Set", threshold=0.5)
     return detector
