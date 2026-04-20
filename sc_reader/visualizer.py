@@ -1909,6 +1909,8 @@ def interactive_pt_diagram(
             if xaxis_range is None:
                 pressure_fig.layout.xaxis.range = None
                 temp_fig.layout.xaxis.range = None
+                pressure_fig.layout.yaxis.autorange = True
+                temp_fig.layout.yaxis.autorange = True
                 _update_pt_diagram(df)
                 return
 
@@ -1920,6 +1922,47 @@ def interactive_pt_diagram(
                 temp_fig.layout.xaxis.range = target_range
 
             df_range = cache[start:end]
+
+            # 计算选中时间段内的 y 轴范围并更新
+            if len(df_range) > 0:
+                # 更新压力图 y 轴（优化：直接计算每列的 min/max，避免构建大列表）
+                p_mins, p_maxs = [], []
+                for p_col in pressure_cols:
+                    if p_col in df_range.columns:
+                        col_data = df_range[p_col].dropna()
+                        if len(col_data) > 0:
+                            p_mins.append((col_data * press_scale + press_offset).min())
+                            p_maxs.append((col_data * press_scale + press_offset).max())
+                if p_mins and p_maxs:
+                    p_min, p_max = min(p_mins), max(p_maxs)
+                    # 处理恒定值情况：如果范围太小，使用数值本身的 5% 作为边距
+                    range_span = p_max - p_min
+                    if range_span < 1e-6:  # 几乎恒定
+                        p_margin = max(abs(p_max) * 0.05, 0.1)
+                    else:
+                        p_margin = range_span * 0.05
+                    if source != "pressure":
+                        pressure_fig.layout.yaxis.range = [p_min - p_margin, p_max + p_margin]
+
+                # 更新温度图 y 轴（同样优化）
+                t_mins, t_maxs = [], []
+                for t_col in temperature_cols:
+                    if t_col in df_range.columns:
+                        col_data = df_range[t_col].dropna()
+                        if len(col_data) > 0:
+                            t_mins.append((col_data * temp_scale + temp_offset).min())
+                            t_maxs.append((col_data * temp_scale + temp_offset).max())
+                if t_mins and t_maxs:
+                    t_min, t_max = min(t_mins), max(t_maxs)
+                    # 处理恒定值情况
+                    range_span = t_max - t_min
+                    if range_span < 1e-6:  # 几乎恒定
+                        t_margin = max(abs(t_max) * 0.05, 0.1)
+                    else:
+                        t_margin = range_span * 0.05
+                    if source != "temp":
+                        temp_fig.layout.yaxis.range = [t_min - t_margin, t_max + t_margin]
+
             _update_pt_diagram(df_range)
         except Exception as e:
             warnings.warn(f"Failed to update phase diagram: {e}", UserWarning, stacklevel=2)
